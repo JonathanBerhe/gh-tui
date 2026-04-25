@@ -6,7 +6,7 @@ use anyhow::Result;
 use crossterm::event::{Event as CtEvent, EventStream};
 use futures::StreamExt;
 use gh_core::{initial_commands, reduce, Msg, State};
-use gh_input::{Action, Resolution};
+use gh_input::{Action, Resolution, Resolver};
 use tokio::sync::mpsc;
 use tracing::{debug, info_span};
 
@@ -51,15 +51,19 @@ pub async fn run(mut terminal: Tui) -> Result<()> {
 
 async fn input_task(tx: mpsc::Sender<Msg>) {
     let mut events = EventStream::new();
+    let mut resolver = Resolver::new();
     while let Some(Ok(event)) = events.next().await {
         if let CtEvent::Key(key) = event {
-            match gh_input::resolve(key) {
+            match resolver.feed(key) {
                 Resolution::Action(Action::Quit) => {
                     if tx.send(Msg::Quit).await.is_err() {
                         break;
                     }
                 }
-                Resolution::Action(Action::None) | Resolution::Pending | Resolution::Cancel => {}
+                Resolution::Action(action) => {
+                    debug!(?action, "action without handler");
+                }
+                Resolution::Pending | Resolution::Cancel => {}
             }
         }
     }
