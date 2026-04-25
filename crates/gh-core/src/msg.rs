@@ -3,7 +3,10 @@
 //! `Msg` expresses **domain events**, not raw key presses. Keys are resolved
 //! to `gh_input::Action` first; the binary maps `Action -> Msg`.
 
-use crate::pulls::{PrSummary, RepoRef};
+use crate::{
+    pulls::{PrSummary, RepoRef},
+    rate_limit::RateLimit,
+};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -32,6 +35,8 @@ pub enum Msg {
     SelectionDelta(i32),
     /// Jump selection to first or last item.
     SelectionJump(SelectionJump),
+    /// Fresh rate-limit reading from response headers.
+    RateLimitUpdate(RateLimit),
     Quit,
 }
 

@@ -3,6 +3,7 @@
 use crate::{
     auth::AuthState,
     pulls::{PrSummary, RepoRef},
+    rate_limit::RateLimit,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +52,7 @@ pub struct State {
     pub pending: String,
     pub auth: AuthState,
     pub screen: Screen,
+    pub rate_limit: Option<RateLimit>,
     pub should_quit: bool,
 }
 

@@ -100,6 +100,9 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 }
             }
         }
+        Msg::RateLimitUpdate(rl) => {
+            state.rate_limit = Some(rl);
+        }
     }
     (state, cmds)
 }
@@ -374,5 +377,34 @@ mod tests {
         // In Welcome screen, selection deltas don't crash and don't mutate.
         let (state, _) = reduce(State::default(), Msg::SelectionDelta(3));
         assert!(matches!(state.screen, Screen::Welcome));
+    }
+
+    #[test]
+    fn rate_limit_update_sets_state() {
+        let rl = crate::rate_limit::RateLimit {
+            remaining: 4998,
+            limit: 5000,
+            reset_at: chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        };
+        let (state, cmds) = reduce(State::default(), Msg::RateLimitUpdate(rl));
+        assert_eq!(state.rate_limit, Some(rl));
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_update_overwrites_previous() {
+        let rl1 = crate::rate_limit::RateLimit {
+            remaining: 5000,
+            limit: 5000,
+            reset_at: chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        };
+        let rl2 = crate::rate_limit::RateLimit {
+            remaining: 4500,
+            limit: 5000,
+            reset_at: chrono::Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+        };
+        let (s, _) = reduce(State::default(), Msg::RateLimitUpdate(rl1));
+        let (s, _) = reduce(s, Msg::RateLimitUpdate(rl2));
+        assert_eq!(s.rate_limit, Some(rl2));
     }
 }

@@ -46,6 +46,7 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                     AuthOutcome::Token { token, host, user } => {
                         match Client::new(&token, &host, ctx.cache.clone()) {
                             Ok(client) => {
+                                let client = client.with_tx(ctx.tx.clone());
                                 // OnceCell::set returns Err if already set;
                                 // a second auth attempt would land here.
                                 // Today we only auth once at startup.
