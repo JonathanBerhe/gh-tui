@@ -6,7 +6,14 @@
 #[derive(Debug, Clone)]
 pub enum Msg {
     Tick,
-    AuthReady { host: String, user: Option<String> },
-    AuthMissing { reason: String },
+    AuthReady {
+        host: String,
+        user: Option<String>,
+    },
+    AuthMissing {
+        reason: String,
+    },
+    /// Vim resolver's pending-buffer display has changed.
+    PendingChanged(String),
     Quit,
 }

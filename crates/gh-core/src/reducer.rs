@@ -22,6 +22,9 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
         Msg::AuthMissing { reason } => {
             state.auth = AuthState::Missing { reason };
         }
+        Msg::PendingChanged(buf) => {
+            state.pending = buf;
+        }
     }
     (state, cmds)
 }
@@ -86,5 +89,22 @@ mod tests {
         let cmds = initial_commands();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0], Cmd::AuthenticateFromGh));
+    }
+
+    #[test]
+    fn pending_changed_sets_state_pending() {
+        let (state, cmds) = reduce(State::default(), Msg::PendingChanged("2d3".into()));
+        assert_eq!(state.pending, "2d3");
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn pending_changed_can_clear() {
+        let s = State {
+            pending: "g".into(),
+            ..State::default()
+        };
+        let (state, _) = reduce(s, Msg::PendingChanged(String::new()));
+        assert_eq!(state.pending, "");
     }
 }

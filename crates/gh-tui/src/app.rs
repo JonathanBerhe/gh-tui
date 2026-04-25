@@ -52,19 +52,38 @@ pub async fn run(mut terminal: Tui) -> Result<()> {
 async fn input_task(tx: mpsc::Sender<Msg>) {
     let mut events = EventStream::new();
     let mut resolver = Resolver::new();
+    let mut last_pending = String::new();
     while let Some(Ok(event)) = events.next().await {
-        if let CtEvent::Key(key) = event {
-            match resolver.feed(key) {
-                Resolution::Action(Action::Quit) => {
-                    if tx.send(Msg::Quit).await.is_err() {
-                        break;
-                    }
-                }
-                Resolution::Action(action) => {
-                    debug!(?action, "action without handler");
-                }
-                Resolution::Pending | Resolution::Cancel => {}
+        let CtEvent::Key(key) = event else {
+            continue;
+        };
+
+        let resolution = resolver.feed(key);
+
+        // Emit pending-buffer updates only when the display changes — keeps
+        // redraws minimal during multi-key sequences.
+        let cur_pending = resolver.pending_display();
+        if cur_pending != last_pending {
+            if tx
+                .send(Msg::PendingChanged(cur_pending.clone()))
+                .await
+                .is_err()
+            {
+                break;
             }
+            last_pending = cur_pending;
+        }
+
+        match resolution {
+            Resolution::Action(Action::Quit) => {
+                if tx.send(Msg::Quit).await.is_err() {
+                    break;
+                }
+            }
+            Resolution::Action(action) => {
+                debug!(?action, "action without handler");
+            }
+            Resolution::Pending | Resolution::Cancel => {}
         }
     }
 }
