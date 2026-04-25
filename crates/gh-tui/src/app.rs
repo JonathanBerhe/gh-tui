@@ -2,13 +2,16 @@
 //! to get `Action`s, maps `Action → Msg`, runs `gh_core::reduce`, dispatches
 //! commands, and redraws.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, EventStream};
 use futures::StreamExt;
+use gh_api::{cache_db_path, EtagCache};
 use gh_core::{initial_commands, reduce, Cmd, Msg, RepoRef, SelectionJump, State};
 use gh_input::{Action, Motion, Resolution, Resolver};
 use tokio::sync::mpsc;
-use tracing::{debug, info_span};
+use tracing::{debug, info_span, warn};
 
 use crate::{
     terminal::Tui,
@@ -19,7 +22,12 @@ const CHANNEL_CAPACITY: usize = 256;
 
 pub async fn run(mut terminal: Tui, repo_arg: Option<String>) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Msg>(CHANNEL_CAPACITY);
-    let ctx = AppCtx::new(tx.clone());
+
+    // Build the ETag cache. Persistent SQLite when the cache dir is
+    // writable; falls back to an in-memory cache so the binary still
+    // launches if the cache is corrupt or the FS is read-only.
+    let cache = Arc::new(open_cache_or_fallback().await);
+    let ctx = AppCtx::new(tx.clone(), cache);
 
     // Always kick off auth detection.
     for cmd in initial_commands() {
@@ -131,5 +139,19 @@ fn action_to_msg(action: Action) -> Option<Msg> {
 async fn ctrl_c_task(tx: mpsc::Sender<Msg>) {
     if tokio::signal::ctrl_c().await.is_ok() {
         let _ = tx.send(Msg::Quit).await;
+    }
+}
+
+async fn open_cache_or_fallback() -> EtagCache {
+    let Some(path) = cache_db_path() else {
+        warn!("no cache directory available; using in-memory cache");
+        return EtagCache::in_memory();
+    };
+    match EtagCache::open(&path).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, path = %path.display(), "cache open failed; falling back to in-memory");
+            EtagCache::in_memory()
+        }
     }
 }

@@ -12,10 +12,20 @@ description = "GitHub client for gh-tui: auth, REST, GraphQL, ETag cache, rate l
 gh-core = { path = "../gh-core" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+directories = { workspace = true }
 octocrab = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "test-util"] }
+wiremock = { workspace = true }
 
 [lints]
 workspace = true
