@@ -1,11 +1,14 @@
-//! REST: list open PRs for a repository (with ETag caching via [`Client`]).
+//! REST: list open PRs for a repository, one page at a time.
+//!
+//! Each page URL (`?page=N`) becomes its own ETag-cached entry, so a second
+//! visit to the same repo with no PR changes serves every page from cache.
 
 use chrono::{DateTime, Utc};
 use gh_core::{PrSummary, RepoRef};
 use thiserror::Error;
 use tracing::{debug, instrument};
 
-use crate::client::{ApiError, Client};
+use crate::client::{ApiError, Client, Page};
 
 #[derive(Debug, Error)]
 pub enum PullsError {
@@ -15,25 +18,41 @@ pub enum PullsError {
     Api(#[from] ApiError),
 }
 
-/// Fetch the first page of open PRs (up to 30 items) for `repo`.
-///
-/// Pagination via streaming arrives in PR #4; for the MVP we eagerly take
-/// the first page so the screen has something to show immediately.
+/// One page of the open-PR list. `has_more` is `true` iff GitHub's `Link`
+/// header on this response advertised `rel="next"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrPage {
+    pub page: u32,
+    pub items: Vec<PrSummary>,
+    pub has_more: bool,
+}
+
+/// Fetch a single page of open PRs (page numbers are 1-based, matching
+/// GitHub's API).
 #[instrument(skip(client))]
-pub async fn list_open_prs(client: &Client, repo: &RepoRef) -> Result<Vec<PrSummary>, PullsError> {
+pub async fn fetch_open_prs_page(
+    client: &Client,
+    repo: &RepoRef,
+    page: u32,
+) -> Result<PrPage, PullsError> {
     let path = format!(
-        "/repos/{}/{}/pulls?state=open&sort=created&direction=desc&per_page=30",
+        "/repos/{}/{}/pulls?state=open&sort=created&direction=desc&per_page=30&page={page}",
         repo.owner, repo.name
     );
 
-    let raw: Vec<octocrab::models::pulls::PullRequest> =
+    let res: Page<Vec<octocrab::models::pulls::PullRequest>> =
         client.get_json(&path).await.map_err(|e| match e {
             ApiError::NotFound => PullsError::NotFound(repo.slug()),
             other => PullsError::Api(other),
         })?;
 
-    debug!(count = raw.len(), "got pr page");
-    Ok(raw.into_iter().map(from_octocrab).collect())
+    debug!(count = res.body.len(), has_more = res.has_next, %page, "got pr page");
+
+    Ok(PrPage {
+        page,
+        items: res.body.into_iter().map(from_octocrab).collect(),
+        has_more: res.has_next,
+    })
 }
 
 fn from_octocrab(p: octocrab::models::pulls::PullRequest) -> PrSummary {

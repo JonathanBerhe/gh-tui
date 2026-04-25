@@ -17,6 +17,6 @@ pub mod repo;
 
 pub use cache::{CacheError, CachedEntry, EtagCache};
 pub use cache_path::cache_db_path;
-pub use client::{ApiError, Client, ClientError};
-pub use pulls::{list_open_prs, PullsError};
+pub use client::{ApiError, Client, ClientError, Page};
+pub use pulls::{fetch_open_prs_page, PrPage, PullsError};
 pub use repo::{resolve_from_cwd, RepoResolveError};

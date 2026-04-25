@@ -38,6 +38,13 @@ pub enum Screen {
         repo: RepoRef,
         items: Vec<PrSummary>,
         selected: usize,
+        /// Highest page index already appended (1-based).
+        pages_loaded: u32,
+        /// Whether the last response indicated more pages exist.
+        has_more: bool,
+        /// True while a next-page fetch is in flight; gates the auto-scroll
+        /// trigger so we don't fire concurrent requests.
+        loading_next: bool,
     },
     /// Unrecoverable error; user-facing message + optional hint.
     Error {

@@ -8,6 +8,6 @@ pub enum Cmd {
     AuthenticateFromGh,
     /// Shell out to `gh repo view` to figure out the repo from cwd.
     ResolveRepoFromCwd,
-    /// Fetch the open-PR list for the given repo.
-    FetchPrList { repo: RepoRef },
+    /// Fetch a single page of open PRs (1-based page index).
+    FetchPrPage { repo: RepoRef, page: u32 },
 }

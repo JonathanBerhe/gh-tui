@@ -24,10 +24,12 @@ pub enum Msg {
     RepoResolved(RepoRef),
     /// `gh repo view` failed (no argv + not in a repo).
     RepoResolveFailed(String),
-    /// The PR list arrived from the API.
-    PrListReady {
+    /// One page of the PR list arrived from the API.
+    PrPageReady {
         repo: RepoRef,
+        page: u32,
         items: Vec<PrSummary>,
+        has_more: bool,
     },
     /// The PR list fetch failed.
     PrListFailed(String),

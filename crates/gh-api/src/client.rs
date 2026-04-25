@@ -42,6 +42,14 @@ pub enum ApiError {
     StaleNotModified(String),
 }
 
+/// A successful API response: parsed body plus metadata extracted from the
+/// response (currently just whether a `rel="next"` Link is present).
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    pub body: T,
+    pub has_next: bool,
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -89,10 +97,15 @@ impl Client {
 
     /// Conditional GET with ETag caching. `path` is appended to the base URL.
     ///
-    /// On cache hit + 304: deserializes from the cached body.
+    /// Returns the parsed body alongside `has_next` — true iff the response's
+    /// `Link` header advertises a `rel="next"` page. Callers that don't care
+    /// about pagination can ignore the bool.
+    ///
+    /// On cache hit + 304: deserializes from the cached body, but `has_next`
+    /// still comes from the live response (GitHub sends `Link` on 304).
     /// On cache miss / etag mismatch: fetches, stores etag+body, deserializes.
     #[instrument(skip(self), fields(path = %path))]
-    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<Page<T>, ApiError> {
         let url = self.url(path);
 
         let cached = self.cache.get(&url).await;
@@ -121,9 +134,14 @@ impl Client {
             }
         }
 
+        let has_next = has_next_link(resp.headers());
+
         if status == StatusCode::NOT_MODIFIED {
             return match cached {
-                Some(c) => Ok(serde_json::from_slice(&c.body)?),
+                Some(c) => Ok(Page {
+                    body: serde_json::from_slice(&c.body)?,
+                    has_next,
+                }),
                 None => Err(ApiError::StaleNotModified(url)),
             };
         }
@@ -149,13 +167,24 @@ impl Client {
             }
         }
 
-        Ok(serde_json::from_slice(&body)?)
+        Ok(Page {
+            body: serde_json::from_slice(&body)?,
+            has_next,
+        })
     }
 
     fn url(&self, path: &str) -> String {
         let trimmed = path.trim_start_matches('/');
         format!("{}{}", self.base, trimmed)
     }
+}
+
+/// True iff the response's `Link` header advertises `rel="next"`.
+fn has_next_link(headers: &HeaderMap) -> bool {
+    headers
+        .get("link")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s.split(',').any(|part| part.contains(r#"rel="next""#)))
 }
 
 /// Parse the `x-ratelimit-{remaining,limit,reset}` headers into a [`RateLimit`].
@@ -228,5 +257,32 @@ mod tests {
             derive_base_url("http://127.0.0.1:1234/"),
             "http://127.0.0.1:1234/"
         );
+    }
+
+    #[test]
+    fn has_next_link_detects_next_rel() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "link",
+            r#"<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=5>; rel="last""#
+                .parse()
+                .unwrap(),
+        );
+        assert!(has_next_link(&h));
+    }
+
+    #[test]
+    fn has_next_link_false_when_only_prev() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "link",
+            r#"<https://api.github.com/x?page=1>; rel="prev""#.parse().unwrap(),
+        );
+        assert!(!has_next_link(&h));
+    }
+
+    #[test]
+    fn has_next_link_false_when_missing() {
+        assert!(!has_next_link(&HeaderMap::new()));
     }
 }
