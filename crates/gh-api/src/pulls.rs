@@ -1,20 +1,18 @@
-//! REST: list open PRs for a repository.
+//! REST: list open PRs for a repository (with ETag caching via [`Client`]).
 
 use chrono::{DateTime, Utc};
 use gh_core::{PrSummary, RepoRef};
-use octocrab::params::pulls::Sort;
-use octocrab::params::{Direction, State};
 use thiserror::Error;
 use tracing::{debug, instrument};
 
-use crate::Client;
+use crate::client::{ApiError, Client};
 
 #[derive(Debug, Error)]
 pub enum PullsError {
     #[error("repo `{0}` not found or no access")]
     NotFound(String),
-    #[error("octocrab error: {0}")]
-    Octocrab(#[from] octocrab::Error),
+    #[error("api error: {0}")]
+    Api(#[from] ApiError),
 }
 
 /// Fetch the first page of open PRs (up to 30 items) for `repo`.
@@ -23,26 +21,19 @@ pub enum PullsError {
 /// the first page so the screen has something to show immediately.
 #[instrument(skip(client))]
 pub async fn list_open_prs(client: &Client, repo: &RepoRef) -> Result<Vec<PrSummary>, PullsError> {
-    let page = client
-        .octocrab()
-        .pulls(&repo.owner, &repo.name)
-        .list()
-        .state(State::Open)
-        .sort(Sort::Created)
-        .direction(Direction::Descending)
-        .per_page(30)
-        .send()
-        .await
-        .map_err(|e| match &e {
-            octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 404 => {
-                PullsError::NotFound(repo.slug())
-            }
-            _ => PullsError::Octocrab(e),
+    let path = format!(
+        "/repos/{}/{}/pulls?state=open&sort=created&direction=desc&per_page=30",
+        repo.owner, repo.name
+    );
+
+    let raw: Vec<octocrab::models::pulls::PullRequest> =
+        client.get_json(&path).await.map_err(|e| match e {
+            ApiError::NotFound => PullsError::NotFound(repo.slug()),
+            other => PullsError::Api(other),
         })?;
 
-    debug!(count = page.items.len(), "got pr page");
-
-    Ok(page.items.into_iter().map(from_octocrab).collect())
+    debug!(count = raw.len(), "got pr page");
+    Ok(raw.into_iter().map(from_octocrab).collect())
 }
 
 fn from_octocrab(p: octocrab::models::pulls::PullRequest) -> PrSummary {

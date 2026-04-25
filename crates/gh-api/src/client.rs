@@ -1,61 +1,186 @@
-//! Thin wrapper around `octocrab::Octocrab`.
+//! Authenticated GitHub HTTP client with ETag-conditional GETs.
 //!
-//! Phase 3 keeps this minimal — just constructs the client with the resolved
-//! token and host. PR #2 adds an ETag cache layer; PR #3 adds rate-limit
-//! header extraction.
+//! Uses `reqwest` directly (rather than octocrab's typed wrappers) so we have
+//! full control over the `If-None-Match` flow and the response headers.
+//! Octocrab is still pulled in for its `models::*` deserialization shapes
+//! and may host higher-level helpers in later phases.
 
 use std::sync::Arc;
 
-use octocrab::Octocrab;
+use reqwest::{
+    header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, USER_AGENT},
+    StatusCode,
+};
+use serde::de::DeserializeOwned;
 use thiserror::Error;
+use tracing::{debug, instrument};
+
+use crate::cache::EtagCache;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("invalid base URI for host `{host}`: {source}")]
-    BadBaseUri {
-        host: String,
-        #[source]
-        source: octocrab::Error,
-    },
-    #[error("octocrab build failed: {0}")]
-    Build(#[from] octocrab::Error),
+    #[error("invalid host `{0}`: {1}")]
+    BadHost(String, String),
+    #[error("reqwest build failed: {0}")]
+    Build(#[from] reqwest::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum ApiError {
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("decode error: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("404 Not Found")]
+    NotFound,
+    #[error("server returned {0}")]
+    Status(u16),
+    #[error("304 received but cache had no entry for {0}")]
+    StaleNotModified(String),
 }
 
 #[derive(Clone)]
 pub struct Client {
-    inner: Arc<Octocrab>,
+    http: reqwest::Client,
+    /// Pre-rendered authorization header value (`Bearer <token>`).
+    auth: String,
+    /// Base URL with trailing slash, e.g. `https://api.github.com/` or
+    /// `https://ghe.example.com/api/v3/`. For tests, can be the wiremock
+    /// URI directly (`http://127.0.0.1:1234/`).
+    base: String,
+    cache: Arc<EtagCache>,
 }
 
 impl Client {
-    /// Build an octocrab instance bound to `token` and `host`. For GHE, the
-    /// REST base URI is `https://<host>/api/v3`; for `github.com` octocrab's
-    /// default is correct.
-    pub fn new(token: &str, host: &str) -> Result<Self, ClientError> {
-        let mut builder = Octocrab::builder().personal_token(token.to_string());
-        if host != "github.com" {
-            let base = format!("https://{host}/api/v3/");
-            builder = builder
-                .base_uri(base.clone())
-                .map_err(|source| ClientError::BadBaseUri {
-                    host: host.to_string(),
-                    source,
-                })?;
-        }
-        let octocrab = builder.build()?;
+    /// Build a client. `host` is one of:
+    /// - `"github.com"` → `https://api.github.com/`
+    /// - `"ghe.example.com"` → `https://ghe.example.com/api/v3/`
+    /// - any value starting with `http://` or `https://` → used verbatim
+    ///   (test mode against a mock server)
+    pub fn new(token: &str, host: &str, cache: Arc<EtagCache>) -> Result<Self, ClientError> {
+        let base = derive_base_url(host);
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("gh-tui/", env!("CARGO_PKG_VERSION")))
+            .gzip(true)
+            .build()?;
         Ok(Self {
-            inner: Arc::new(octocrab),
+            http,
+            auth: format!("Bearer {token}"),
+            base,
+            cache,
         })
     }
 
-    /// Borrow the underlying octocrab instance for direct API calls.
-    #[must_use]
-    pub fn octocrab(&self) -> &Octocrab {
-        &self.inner
+    /// Conditional GET with ETag caching. `path` is appended to the base URL.
+    ///
+    /// On cache hit + 304: deserializes from the cached body.
+    /// On cache miss / etag mismatch: fetches, stores etag+body, deserializes.
+    #[instrument(skip(self), fields(path = %path))]
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let url = self.url(path);
+
+        let cached = self.cache.get(&url).await;
+
+        let mut req = self
+            .http
+            .get(&url)
+            .header(AUTHORIZATION, &self.auth)
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, concat!("gh-tui/", env!("CARGO_PKG_VERSION")));
+
+        if let Some(c) = &cached {
+            req = req.header(IF_NONE_MATCH, &c.etag);
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        debug!(%status, has_cache = cached.is_some(), "got response");
+
+        if status == StatusCode::NOT_MODIFIED {
+            return match cached {
+                Some(c) => Ok(serde_json::from_slice(&c.body)?),
+                None => Err(ApiError::StaleNotModified(url)),
+            };
+        }
+
+        if status == StatusCode::NOT_FOUND {
+            return Err(ApiError::NotFound);
+        }
+
+        if !status.is_success() {
+            return Err(ApiError::Status(status.as_u16()));
+        }
+
+        let etag = resp
+            .headers()
+            .get(ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let body = resp.bytes().await?;
+
+        if let Some(etag) = etag {
+            if let Err(e) = self.cache.put(&url, &etag, &body).await {
+                debug!(error = %e, "cache put failed");
+            }
+        }
+
+        Ok(serde_json::from_slice(&body)?)
+    }
+
+    fn url(&self, path: &str) -> String {
+        let trimmed = path.trim_start_matches('/');
+        format!("{}{}", self.base, trimmed)
+    }
+}
+
+fn derive_base_url(host: &str) -> String {
+    if host.starts_with("http://") || host.starts_with("https://") {
+        let mut s = host.to_string();
+        if !s.ends_with('/') {
+            s.push('/');
+        }
+        s
+    } else if host == "github.com" {
+        "https://api.github.com/".to_string()
+    } else {
+        format!("https://{host}/api/v3/")
     }
 }
 
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Client").finish_non_exhaustive()
+        f.debug_struct("Client").field("base", &self.base).finish()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn base_url_for_github_com() {
+        assert_eq!(derive_base_url("github.com"), "https://api.github.com/");
+    }
+
+    #[test]
+    fn base_url_for_ghe() {
+        assert_eq!(
+            derive_base_url("ghe.example.com"),
+            "https://ghe.example.com/api/v3/"
+        );
+    }
+
+    #[test]
+    fn base_url_passes_through_explicit_scheme() {
+        assert_eq!(
+            derive_base_url("http://127.0.0.1:1234"),
+            "http://127.0.0.1:1234/"
+        );
+        assert_eq!(
+            derive_base_url("http://127.0.0.1:1234/"),
+            "http://127.0.0.1:1234/"
+        );
     }
 }
