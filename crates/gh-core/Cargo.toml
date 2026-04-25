@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Pure domain types and reducers for gh-tui. No I/O, no ratatui."
 
 [dependencies]
+chrono = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
