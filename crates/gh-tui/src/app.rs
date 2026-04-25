@@ -5,27 +5,45 @@
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, EventStream};
 use futures::StreamExt;
-use gh_core::{initial_commands, reduce, Msg, State};
-use gh_input::{Action, Resolution, Resolver};
+use gh_core::{initial_commands, reduce, Cmd, Msg, RepoRef, SelectionJump, State};
+use gh_input::{Action, Motion, Resolution, Resolver};
 use tokio::sync::mpsc;
 use tracing::{debug, info_span};
 
-use crate::{terminal::Tui, workers};
+use crate::{
+    terminal::Tui,
+    workers::{self, AppCtx},
+};
 
 const CHANNEL_CAPACITY: usize = 256;
 
-pub async fn run(mut terminal: Tui) -> Result<()> {
+pub async fn run(mut terminal: Tui, repo_arg: Option<String>) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Msg>(CHANNEL_CAPACITY);
+    let ctx = AppCtx::new(tx.clone());
 
+    // Always kick off auth detection.
     for cmd in initial_commands() {
-        workers::dispatch(cmd, tx.clone());
+        workers::dispatch(cmd, ctx.clone());
+    }
+
+    // Then the repo path: argv-parse if present, else shell out.
+    match repo_arg.as_deref() {
+        Some(arg) => match RepoRef::parse(arg) {
+            Ok(repo) => {
+                let _ = tx.send(Msg::RepoResolved(repo)).await;
+            }
+            Err(e) => {
+                let _ = tx.send(Msg::RepoResolveFailed(e.to_string())).await;
+            }
+        },
+        None => workers::dispatch(Cmd::ResolveRepoFromCwd, ctx.clone()),
     }
 
     tokio::spawn(input_task(tx.clone()));
     tokio::spawn(ctrl_c_task(tx.clone()));
 
     let mut state = State::default();
-    terminal.draw(|f| gh_ui::screens::normal::draw(&state, f))?;
+    terminal.draw(|f| gh_ui::draw(&state, f))?;
 
     while let Some(msg) = rx.recv().await {
         let span = info_span!("reduce");
@@ -36,10 +54,10 @@ pub async fn run(mut terminal: Tui) -> Result<()> {
         drop(_enter);
 
         for cmd in cmds {
-            workers::dispatch(cmd, tx.clone());
+            workers::dispatch(cmd, ctx.clone());
         }
 
-        terminal.draw(|f| gh_ui::screens::normal::draw(&state, f))?;
+        terminal.draw(|f| gh_ui::draw(&state, f))?;
 
         if state.should_quit {
             break;
@@ -60,8 +78,7 @@ async fn input_task(tx: mpsc::Sender<Msg>) {
 
         let resolution = resolver.feed(key);
 
-        // Emit pending-buffer updates only when the display changes — keeps
-        // redraws minimal during multi-key sequences.
+        // Emit pending-buffer updates only when the display changes.
         let cur_pending = resolver.pending_display();
         if cur_pending != last_pending {
             if tx
@@ -75,16 +92,39 @@ async fn input_task(tx: mpsc::Sender<Msg>) {
         }
 
         match resolution {
-            Resolution::Action(Action::Quit) => {
-                if tx.send(Msg::Quit).await.is_err() {
-                    break;
-                }
-            }
             Resolution::Action(action) => {
-                debug!(?action, "action without handler");
+                if let Some(msg) = action_to_msg(action) {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
             }
             Resolution::Pending | Resolution::Cancel => {}
         }
+    }
+}
+
+/// Map a resolver Action to a domain Msg, where applicable. Selection
+/// motions only make sense when the active screen is a list — but the
+/// reducer is the canonical place to decide what to do (it inspects
+/// `state.screen`), so we forward the intent unconditionally.
+fn action_to_msg(action: Action) -> Option<Msg> {
+    match action {
+        Action::Quit => Some(Msg::Quit),
+        Action::None => None,
+        Action::Move { count, motion } => match motion {
+            Motion::Down => Some(Msg::SelectionDelta(
+                i32::try_from(count).unwrap_or(i32::MAX),
+            )),
+            Motion::Up => Some(Msg::SelectionDelta(
+                i32::try_from(count).unwrap_or(i32::MAX).saturating_neg(),
+            )),
+            Motion::DocStart => Some(Msg::SelectionJump(SelectionJump::First)),
+            Motion::DocEnd => Some(Msg::SelectionJump(SelectionJump::Last)),
+            // h/l/w/b/$/0 not bound for the PR list yet — quietly ignore.
+            _ => None,
+        },
+        Action::Operate { .. } => None,
     }
 }
 

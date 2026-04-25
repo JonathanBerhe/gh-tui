@@ -14,6 +14,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "gh-tui", version, about = "Fast terminal UI for GitHub")]
 struct Args {
+    /// `owner/name` of the repo to show. If omitted, infers from cwd via
+    /// `gh repo view`.
+    repo: Option<String>,
+
     /// Logging verbosity (honors `RUST_LOG` if set).
     #[arg(long, default_value = "warn", env = "GH_TUI_LOG_LEVEL")]
     log_level: String,
@@ -37,5 +41,5 @@ async fn main() -> Result<()> {
     let _terminal_guard = terminal::TerminalGuard::enter()?;
     let terminal = terminal::new_terminal()?;
 
-    app::run(terminal).await
+    app::run(terminal, args.repo).await
 }

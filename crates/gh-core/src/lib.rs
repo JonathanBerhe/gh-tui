@@ -9,11 +9,13 @@
 pub mod auth;
 pub mod cmd;
 pub mod msg;
+pub mod pulls;
 pub mod reducer;
 pub mod state;
 
 pub use auth::AuthState;
 pub use cmd::Cmd;
-pub use msg::Msg;
+pub use msg::{Msg, SelectionJump};
+pub use pulls::{ParseRepoRefError, PrSummary, RepoRef};
 pub use reducer::{initial_commands, reduce};
-pub use state::{Mode, State};
+pub use state::{Mode, Screen, State};
