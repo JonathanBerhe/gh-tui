@@ -1,10 +1,12 @@
 //! One-line status bar shared by every screen.
 //!
-//! Format: `MODE  auth-summary  [pending]  context`
+//! Format: `MODE  auth-summary  rate-limit  [pending]  context`
+//! - `rate-limit` is `remaining/limit` (e.g. `4998/5000`) coloured by
+//!   severity once a [`RateLimit`] has been observed.
+//! - `pending` shows the in-progress vim command.
 //! - `context` is screen-specific (e.g. `cli/cli` in PR list mode).
-//! - PR #3 adds a rate-limit segment between auth and pending.
 
-use gh_core::{Screen, State};
+use gh_core::{RateLimit, Screen, State, Tier};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -22,6 +24,7 @@ pub fn status_bar(state: &State) -> Paragraph<'static> {
     );
     let sep = Span::raw("  ");
     let auth = Span::raw(state.auth.summary());
+    let rate = rate_limit_span(state.rate_limit.as_ref());
     let pending = if state.pending.is_empty() {
         Span::raw(String::new())
     } else {
@@ -38,6 +41,21 @@ pub fn status_bar(state: &State) -> Paragraph<'static> {
         Screen::Welcome | Screen::Error { .. } => Span::raw(String::new()),
     };
 
-    Paragraph::new(Line::from(vec![mode, sep, auth, pending, context]))
+    Paragraph::new(Line::from(vec![mode, sep, auth, rate, pending, context]))
         .style(Style::default().bg(Color::Rgb(30, 30, 40)))
+}
+
+fn rate_limit_span(rl: Option<&RateLimit>) -> Span<'static> {
+    let Some(rl) = rl else {
+        return Span::raw(String::new());
+    };
+    let colour = match rl.tier() {
+        Tier::Healthy => Color::DarkGray,
+        Tier::Warning => Color::Yellow,
+        Tier::Critical => Color::Red,
+    };
+    Span::styled(
+        format!("  {}/{}", rl.remaining, rl.limit),
+        Style::default().fg(colour),
+    )
 }
