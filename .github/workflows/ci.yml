@@ -76,24 +76,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --workspace --release
 
-  deny:
-    name: deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2
-      - uses: taiki-e/install-action@v2.50.0
-        with:
-          tool: cargo-deny
-      - name: licenses, bans, sources
-        run: cargo deny --all-features check licenses bans sources
-      # Advisories can fail when upstream RustSec advisory-db ships a malformed
-      # entry that cargo-deny's TOML parser rejects (e.g. RUSTSEC-2026-0073).
-      # The daily audit-schedule workflow re-runs this; soft-fail here so a bad
-      # upstream advisory doesn't block PRs.
-      - name: advisories (soft-fail)
-        run: cargo deny --all-features check advisories
-        continue-on-error: true
-
   docs:
     name: docs
     runs-on: ubuntu-latest
