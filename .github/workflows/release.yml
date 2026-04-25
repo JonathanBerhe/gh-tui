@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: linux-amd64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            artifact: darwin-amd64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2.7.5
+        with:
+          key: release-${{ matrix.target }}
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="${{ github.event.inputs.tag }}"
+            v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p gh-tui
+      - name: Package
+        shell: bash
+        run: |
+          name="gh-tui_${{ steps.ver.outputs.version }}_${{ matrix.artifact }}"
+          mkdir -p staging
+          cp "target/${{ matrix.target }}/release/gh-tui" staging/gh-tui
+          cp README.md staging/ 2>/dev/null || true
+          cp LICENSE-MIT staging/ 2>/dev/null || true
+          cp LICENSE-APACHE staging/ 2>/dev/null || true
+          # Binary at tarball root so `gh extension install` finds it.
+          tar -czf "$name.tar.gz" -C staging .
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4.4.3
+        with:
+          name: gh-tui-${{ matrix.artifact }}
+          path: |
+            gh-tui_*.tar.gz
+            gh-tui_*.tar.gz.sha256
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4.1.8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Show artifacts
+        run: ls -la artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.1.0
+        with:
+          files: |
+            artifacts/gh-tui_*.tar.gz
+            artifacts/gh-tui_*.tar.gz.sha256
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
