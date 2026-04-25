@@ -1,0 +1,22 @@
+name: Audit (scheduled)
+
+# Re-runs cargo-deny advisories daily so newly-published RustSec advisories
+# surface even when no PR has touched the codebase.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: EmbarkStudios/cargo-deny-action@v2.0.6
+        with:
+          command: check advisories
