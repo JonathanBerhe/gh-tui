@@ -6,7 +6,7 @@ use anyhow::Result;
 use crossterm::event::{Event as CtEvent, EventStream};
 use futures::StreamExt;
 use gh_core::{initial_commands, reduce, Msg, State};
-use gh_input::{Action, Resolution};
+use gh_input::{Action, Resolution, Resolver};
 use tokio::sync::mpsc;
 use tracing::{debug, info_span};
 
@@ -51,16 +51,39 @@ pub async fn run(mut terminal: Tui) -> Result<()> {
 
 async fn input_task(tx: mpsc::Sender<Msg>) {
     let mut events = EventStream::new();
+    let mut resolver = Resolver::new();
+    let mut last_pending = String::new();
     while let Some(Ok(event)) = events.next().await {
-        if let CtEvent::Key(key) = event {
-            match gh_input::resolve(key) {
-                Resolution::Action(Action::Quit) => {
-                    if tx.send(Msg::Quit).await.is_err() {
-                        break;
-                    }
-                }
-                Resolution::Action(Action::None) | Resolution::Pending | Resolution::Cancel => {}
+        let CtEvent::Key(key) = event else {
+            continue;
+        };
+
+        let resolution = resolver.feed(key);
+
+        // Emit pending-buffer updates only when the display changes — keeps
+        // redraws minimal during multi-key sequences.
+        let cur_pending = resolver.pending_display();
+        if cur_pending != last_pending {
+            if tx
+                .send(Msg::PendingChanged(cur_pending.clone()))
+                .await
+                .is_err()
+            {
+                break;
             }
+            last_pending = cur_pending;
+        }
+
+        match resolution {
+            Resolution::Action(Action::Quit) => {
+                if tx.send(Msg::Quit).await.is_err() {
+                    break;
+                }
+            }
+            Resolution::Action(action) => {
+                debug!(?action, "action without handler");
+            }
+            Resolution::Pending | Resolution::Cancel => {}
         }
     }
 }
