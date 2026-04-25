@@ -23,6 +23,9 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path deps in our workspace (e.g. `gh-core = { path = "../gh-core" }`) are
+# wildcard-ish from cargo-deny's view; that's not what we're trying to ban.
+allow-wildcard-paths = true
 # We use rustls; never pull OpenSSL in transitively.
 deny = [
     { name = "openssl" },
