@@ -1,0 +1,12 @@
+/target
+**/target
+*.swp
+.DS_Store
+
+# Authoring docs — not tracked per project instructions
+CLAUDE.md
+ROADMAP.md
+
+# IDE / editor
+/.idea
+/.vscode

@@ -1,0 +1,20 @@
+[package]
+name = "gh-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ratatui widgets and screen composition for gh-tui."
+
+[dependencies]
+gh-core = { path = "../gh-core" }
+gh-render = { path = "../gh-render" }
+gh-input = { path = "../gh-input" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

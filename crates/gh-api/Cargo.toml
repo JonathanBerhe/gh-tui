@@ -1,0 +1,19 @@
+[package]
+name = "gh-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "GitHub client for gh-tui: auth, REST, GraphQL, ETag cache, rate limiting."
+
+[dependencies]
+gh-core = { path = "../gh-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

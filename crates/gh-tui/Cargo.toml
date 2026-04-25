@@ -1,0 +1,34 @@
+[package]
+name = "gh-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Fast terminal UI for GitHub; ships as a `gh` extension."
+
+[[bin]]
+name = "gh-tui"
+path = "src/main.rs"
+
+[dependencies]
+gh-core = { path = "../gh-core" }
+gh-input = { path = "../gh-input" }
+gh-api = { path = "../gh-api" }
+gh-render = { path = "../gh-render" }
+gh-ui = { path = "../gh-ui" }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+directories = { workspace = true }
+futures = { workspace = true }
+ratatui = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

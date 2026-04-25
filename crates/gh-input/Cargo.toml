@@ -1,0 +1,21 @@
+[package]
+name = "gh-input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Vim-style key resolver for gh-tui. Pure function from KeyEvent sequences to Action."
+
+[dependencies]
+crossterm = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true
