@@ -69,9 +69,12 @@ async fn cache_miss_then_hit_returns_304() {
         .await;
 
     let repo = RepoRef::parse("foo/bar").unwrap();
-    let prs = gh_api::list_open_prs(&client, &repo).await.unwrap();
-    assert_eq!(prs.len(), 1);
-    assert_eq!(prs[0].number, 42);
+    let prs = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
+    assert_eq!(prs.items.len(), 1);
+    assert_eq!(prs.items[0].number, 42);
+    assert_eq!(prs.page, 1);
 
     server.verify().await;
     server.reset().await;
@@ -85,7 +88,9 @@ async fn cache_miss_then_hit_returns_304() {
         .mount(&server)
         .await;
 
-    let prs2 = gh_api::list_open_prs(&client, &repo).await.unwrap();
+    let prs2 = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
     assert_eq!(prs2, prs, "304 should yield the cached body");
 
     server.verify().await;
@@ -109,7 +114,9 @@ async fn new_etag_overwrites_old_cache_entry() {
         .expect(1)
         .mount(&server)
         .await;
-    let _ = gh_api::list_open_prs(&client, &repo).await.unwrap();
+    let _ = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
     server.verify().await;
     server.reset().await;
 
@@ -125,7 +132,9 @@ async fn new_etag_overwrites_old_cache_entry() {
         .expect(1)
         .mount(&server)
         .await;
-    let _ = gh_api::list_open_prs(&client, &repo).await.unwrap();
+    let _ = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
     server.verify().await;
 
     // Third call should now send the v2 etag.
@@ -137,7 +146,9 @@ async fn new_etag_overwrites_old_cache_entry() {
         .expect(1)
         .mount(&server)
         .await;
-    let _ = gh_api::list_open_prs(&client, &repo).await.unwrap();
+    let _ = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
     server.verify().await;
 }
 
@@ -157,8 +168,12 @@ async fn missing_etag_header_skips_caching() {
         .mount(&server)
         .await;
 
-    let _ = gh_api::list_open_prs(&client, &repo).await.unwrap();
-    let _ = gh_api::list_open_prs(&client, &repo).await.unwrap();
+    let _ = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
+    let _ = gh_api::fetch_open_prs_page(&client, &repo, 1)
+        .await
+        .unwrap();
     server.verify().await;
 }
 
@@ -175,7 +190,7 @@ async fn not_found_maps_to_pulls_error() {
         .mount(&server)
         .await;
 
-    match gh_api::list_open_prs(&client, &repo).await {
+    match gh_api::fetch_open_prs_page(&client, &repo, 1).await {
         Err(gh_api::PullsError::NotFound(slug)) => assert_eq!(slug, "foo/missing"),
         other => panic!("expected NotFound, got {other:?}"),
     }

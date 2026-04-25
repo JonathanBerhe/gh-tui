@@ -41,7 +41,7 @@ async fn rate_limit_headers_are_posted_to_channel() {
         .mount(&server)
         .await;
 
-    let _ = gh_api::list_open_prs(&client, &RepoRef::parse("foo/bar").unwrap())
+    let _ = gh_api::fetch_open_prs_page(&client, &RepoRef::parse("foo/bar").unwrap(), 1)
         .await
         .unwrap();
 
@@ -74,7 +74,7 @@ async fn missing_rate_limit_headers_post_nothing() {
         .mount(&server)
         .await;
 
-    let _ = gh_api::list_open_prs(&client, &RepoRef::parse("foo/bar").unwrap())
+    let _ = gh_api::fetch_open_prs_page(&client, &RepoRef::parse("foo/bar").unwrap(), 1)
         .await
         .unwrap();
 
@@ -107,7 +107,7 @@ async fn malformed_rate_limit_headers_are_skipped() {
         .mount(&server)
         .await;
 
-    let _ = gh_api::list_open_prs(&client, &RepoRef::parse("foo/bar").unwrap())
+    let _ = gh_api::fetch_open_prs_page(&client, &RepoRef::parse("foo/bar").unwrap(), 1)
         .await
         .unwrap();
 

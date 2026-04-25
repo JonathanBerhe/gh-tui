@@ -27,9 +27,12 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         Screen::Welcome => screens::welcome::draw(frame, chunks[0]),
         Screen::Loading { repo } => draw_loading(&repo.slug(), frame, chunks[0]),
         Screen::PrList {
-            items, selected, ..
+            items,
+            selected,
+            loading_next,
+            ..
         } => {
-            screens::pr_list::draw(items, *selected, frame, chunks[0]);
+            screens::pr_list::draw(items, *selected, *loading_next, frame, chunks[0]);
         }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);
