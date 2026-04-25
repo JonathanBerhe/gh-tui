@@ -1,5 +1,6 @@
 //! Vim-style key resolver. Pure function from `KeyEvent` sequences to
-//! [`Action`] via a grammar-style [`PendingCommand`] accumulator.
+//! [`Action`] via a grammar-style accumulator that tracks pre/post-operator
+//! counts, the active operator, and the `g`-prefix state.
 //!
 //! Grammar (Phase 2 subset):
 //!
