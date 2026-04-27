@@ -12,6 +12,7 @@ description = "GitHub client for gh-tui: auth, REST, GraphQL, ETag cache, rate l
 gh-core = { path = "../gh-core" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+cynic = { workspace = true }
 directories = { workspace = true }
 octocrab = { workspace = true }
 reqwest = { workspace = true }

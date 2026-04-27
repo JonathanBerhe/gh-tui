@@ -34,6 +34,12 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         } => {
             screens::pr_list::draw(items, *selected, *loading_next, frame, chunks[0]);
         }
+        Screen::LoadingDetail { repo, number } => {
+            draw_loading(&format!("{} #{number}", repo.slug()), frame, chunks[0]);
+        }
+        Screen::PrDetail { detail, scroll, .. } => {
+            screens::pr_detail::draw(detail, *scroll, frame, chunks[0]);
+        }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);
         }

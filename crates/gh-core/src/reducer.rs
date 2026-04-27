@@ -112,6 +112,60 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 hint: None,
             };
         }
+        Msg::OpenSelectedPr => {
+            // Only meaningful from the PR list. Snapshot the current screen
+            // onto the nav stack and transition to LoadingDetail.
+            if let Screen::PrList {
+                repo,
+                items,
+                selected,
+                ..
+            } = &state.screen
+            {
+                if let Some(pr) = items.get(*selected) {
+                    let number = pr.number;
+                    let repo_ref = repo.clone();
+                    let prior = std::mem::replace(
+                        &mut state.screen,
+                        Screen::LoadingDetail {
+                            repo: repo_ref.clone(),
+                            number,
+                        },
+                    );
+                    state.nav_stack.push(prior);
+                    cmds.push(Cmd::FetchPrDetail {
+                        repo: repo_ref,
+                        number,
+                    });
+                }
+            }
+        }
+        Msg::PrDetailReady(detail) => {
+            // Only consume if we're still waiting for THIS detail. Stale
+            // responses (number mismatch or screen changed) drop silently.
+            if let Screen::LoadingDetail { repo, number } = &state.screen {
+                if detail.number == *number {
+                    state.screen = Screen::PrDetail {
+                        repo: repo.clone(),
+                        detail,
+                        scroll: 0,
+                    };
+                }
+            }
+        }
+        Msg::PrDetailFailed(reason) => {
+            // Only transition if we were actually loading a detail; otherwise
+            // a stale failure shouldn't blow away an unrelated screen.
+            if matches!(state.screen, Screen::LoadingDetail { .. }) {
+                state.screen = Screen::Error {
+                    message: format!("PR detail failed: {reason}"),
+                    hint: None,
+                };
+            }
+        }
+        Msg::Back => {
+            state.screen = state.nav_stack.pop().unwrap_or(Screen::Welcome);
+        }
         Msg::SelectionDelta(delta) => {
             if let Screen::PrList {
                 repo,
@@ -585,6 +639,205 @@ mod tests {
         let (state, cmds) = reduce(State::default(), Msg::RateLimitUpdate(rl));
         assert_eq!(state.rate_limit, Some(rl));
         assert!(cmds.is_empty());
+    }
+
+    // ── Phase 4: PR detail ─────────────────────────────────────────────
+
+    fn pr_detail(number: u64) -> crate::pulls::PrDetail {
+        crate::pulls::PrDetail {
+            number,
+            title: format!("pr {number}"),
+            body: String::new(),
+            state: crate::pulls::PrState::Open,
+            draft: false,
+            mergeable: crate::pulls::Mergeable::Yes,
+            author: "alice".into(),
+            head_ref: "feat".into(),
+            base_ref: "main".into(),
+            additions: 10,
+            deletions: 2,
+            review_decision: crate::pulls::ReviewDecision::None,
+        }
+    }
+
+    #[test]
+    fn open_selected_pr_pushes_to_nav_stack_and_emits_fetch() {
+        let s = pr_list_state(vec![pr(1), pr(2), pr(3)], 1);
+        let (s2, cmds) = reduce(s, Msg::OpenSelectedPr);
+        assert!(matches!(s2.screen, Screen::LoadingDetail { number: 2, .. }));
+        assert_eq!(s2.nav_stack.len(), 1, "prior PrList should be on stack");
+        assert!(matches!(s2.nav_stack[0], Screen::PrList { .. }));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Cmd::FetchPrDetail { number: 2, .. }));
+    }
+
+    #[test]
+    fn open_selected_pr_outside_pr_list_is_noop() {
+        let (s, cmds) = reduce(State::default(), Msg::OpenSelectedPr);
+        assert!(matches!(s.screen, Screen::Welcome));
+        assert!(cmds.is_empty());
+        assert!(s.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn open_selected_pr_with_empty_list_is_noop() {
+        let s = pr_list_state(vec![], 0);
+        let (s2, cmds) = reduce(s, Msg::OpenSelectedPr);
+        assert!(matches!(s2.screen, Screen::PrList { .. }));
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn pr_detail_ready_transitions_to_pr_detail() {
+        let s = State {
+            screen: Screen::LoadingDetail {
+                repo: repo(),
+                number: 7,
+            },
+            nav_stack: vec![Screen::PrList {
+                repo: repo(),
+                items: vec![pr(7)],
+                selected: 0,
+                pages_loaded: 1,
+                has_more: false,
+                loading_next: false,
+            }],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::PrDetailReady(pr_detail(7)));
+        let Screen::PrDetail { detail, scroll, .. } = s2.screen else {
+            panic!("expected PrDetail");
+        };
+        assert_eq!(detail.number, 7);
+        assert_eq!(scroll, 0);
+    }
+
+    #[test]
+    fn pr_detail_ready_for_stale_number_is_dropped() {
+        // We're loading #7 but a #99 detail arrives — drop it.
+        let s = State {
+            screen: Screen::LoadingDetail {
+                repo: repo(),
+                number: 7,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::PrDetailReady(pr_detail(99)));
+        assert!(matches!(s2.screen, Screen::LoadingDetail { number: 7, .. }));
+    }
+
+    #[test]
+    fn pr_detail_failed_transitions_to_error_keeping_nav_stack() {
+        let prior = Screen::PrList {
+            repo: repo(),
+            items: vec![pr(7)],
+            selected: 0,
+            pages_loaded: 1,
+            has_more: false,
+            loading_next: false,
+        };
+        let s = State {
+            screen: Screen::LoadingDetail {
+                repo: repo(),
+                number: 7,
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::PrDetailFailed("rate limited".into()));
+        assert!(matches!(s2.screen, Screen::Error { .. }));
+        assert_eq!(s2.nav_stack.len(), 1, "stack survives so Back recovers");
+    }
+
+    #[test]
+    fn pr_detail_failed_outside_loading_is_noop() {
+        let (s, _) = reduce(State::default(), Msg::PrDetailFailed("boom".into()));
+        assert!(matches!(s.screen, Screen::Welcome));
+    }
+
+    #[test]
+    fn back_from_pr_detail_pops_to_pr_list() {
+        let prior = Screen::PrList {
+            repo: repo(),
+            items: vec![pr(7), pr(8)],
+            selected: 1,
+            pages_loaded: 1,
+            has_more: false,
+            loading_next: false,
+        };
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 5,
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::Back);
+        let Screen::PrList { selected, .. } = s2.screen else {
+            panic!("expected PrList");
+        };
+        assert_eq!(selected, 1, "selection preserved across detail round-trip");
+        assert!(s2.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn back_from_loading_detail_pops_to_pr_list() {
+        let prior = Screen::PrList {
+            repo: repo(),
+            items: vec![pr(7)],
+            selected: 0,
+            pages_loaded: 1,
+            has_more: false,
+            loading_next: false,
+        };
+        let s = State {
+            screen: Screen::LoadingDetail {
+                repo: repo(),
+                number: 7,
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::Back);
+        assert!(matches!(s2.screen, Screen::PrList { .. }));
+    }
+
+    #[test]
+    fn back_from_error_pops_to_pr_list() {
+        let prior = Screen::PrList {
+            repo: repo(),
+            items: vec![pr(7)],
+            selected: 0,
+            pages_loaded: 1,
+            has_more: false,
+            loading_next: false,
+        };
+        let s = State {
+            screen: Screen::Error {
+                message: "boom".into(),
+                hint: None,
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::Back);
+        assert!(matches!(s2.screen, Screen::PrList { .. }));
+    }
+
+    #[test]
+    fn back_with_empty_nav_stack_returns_to_welcome() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::Back);
+        assert!(matches!(s2.screen, Screen::Welcome));
     }
 
     #[test]

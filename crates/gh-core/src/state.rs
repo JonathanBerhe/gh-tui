@@ -2,7 +2,7 @@
 
 use crate::{
     auth::AuthState,
-    pulls::{PrSummary, RepoRef},
+    pulls::{PrDetail, PrSummary, RepoRef},
     rate_limit::RateLimit,
 };
 
@@ -31,7 +31,7 @@ pub enum Screen {
     /// Pre-bootstrap placeholder (Phase 1's body).
     #[default]
     Welcome,
-    /// Repo identified, waiting for the API response.
+    /// Repo identified, waiting for the PR list API response.
     Loading { repo: RepoRef },
     /// PR list rendered.
     PrList {
@@ -46,6 +46,15 @@ pub enum Screen {
         /// trigger so we don't fire concurrent requests.
         loading_next: bool,
     },
+    /// Waiting for PR detail GraphQL response.
+    LoadingDetail { repo: RepoRef, number: u64 },
+    /// PR detail rendered. `scroll` is in logical-line units (Phase 4 PR #2
+    /// hooks this up; Phase 4 PR #1 leaves it at 0).
+    PrDetail {
+        repo: RepoRef,
+        detail: PrDetail,
+        scroll: u16,
+    },
     /// Unrecoverable error; user-facing message + optional hint.
     Error {
         message: String,
@@ -59,6 +68,9 @@ pub struct State {
     pub pending: String,
     pub auth: AuthState,
     pub screen: Screen,
+    /// Stack of prior screens for back-navigation. `Msg::Back` pops one;
+    /// empty stack returns to `Screen::Welcome`.
+    pub nav_stack: Vec<Screen>,
     pub rate_limit: Option<RateLimit>,
     pub should_quit: bool,
 }

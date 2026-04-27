@@ -129,6 +129,18 @@ impl Resolver {
                 Resolution::Pending
             }
 
+            // Activation / back-navigation. Enter and Backspace bypass the
+            // grammar accumulator entirely (they're not vim operators or
+            // motions); pending state is reset just like a quit binding.
+            KeyCode::Enter => {
+                self.reset();
+                Resolution::Action(Action::Open)
+            }
+            KeyCode::Backspace => {
+                self.reset();
+                Resolution::Action(Action::Back)
+            }
+
             // Single-key motions.
             KeyCode::Char('h') | KeyCode::Left => self.complete_motion(Motion::Left),
             KeyCode::Char('j') | KeyCode::Down => self.complete_motion(Motion::Down),
@@ -667,6 +679,27 @@ mod tests {
     }
 
     // ── reset behaviour ─────────────────────────────────────────────────
+
+    #[test]
+    fn enter_emits_open() {
+        assert_eq!(final_action(&[k(KeyCode::Enter)]), Action::Open);
+    }
+
+    #[test]
+    fn backspace_emits_back() {
+        assert_eq!(final_action(&[k(KeyCode::Backspace)]), Action::Back);
+    }
+
+    #[test]
+    fn enter_clears_pending_then_opens() {
+        // Mid-pending command, Enter resets and emits Open. Caller reducer
+        // will decide whether the partial command should have been honoured;
+        // we choose "Enter trumps grammar".
+        let mut r = Resolver::new();
+        assert_eq!(r.feed(ch('d')), Resolution::Pending);
+        assert_eq!(r.feed(k(KeyCode::Enter)), Resolution::Action(Action::Open));
+        assert_eq!(r.pending_display(), "");
+    }
 
     #[test]
     fn resolver_clean_after_action() {
