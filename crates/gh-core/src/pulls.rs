@@ -70,6 +70,75 @@ pub struct PrSummary {
     pub deletions: u32,
 }
 
+/// Open / closed / merged. Maps from GitHub's `PullRequestState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl PrState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "OPEN",
+            Self::Closed => "CLOSED",
+            Self::Merged => "MERGED",
+        }
+    }
+}
+
+/// Whether GitHub thinks the PR can be merged. `Unknown` is what we get when
+/// GitHub is still computing the answer; the UI treats it as a transient
+/// "checking…" state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Mergeable {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// Aggregated review status for a PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+    /// No required-review configuration, or no decision yet.
+    None,
+}
+
+impl ReviewDecision {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "APPROVED",
+            Self::ChangesRequested => "CHANGES_REQUESTED",
+            Self::ReviewRequired => "REVIEW_REQUIRED",
+            Self::None => "",
+        }
+    }
+}
+
+/// Full PR detail (Phase 4 minimum). Phase 4 PR #3 grows this with reviews
+/// and checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDetail {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: PrState,
+    pub draft: bool,
+    pub mergeable: Mergeable,
+    pub author: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub review_decision: ReviewDecision,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

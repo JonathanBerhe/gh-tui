@@ -119,6 +119,8 @@ async fn input_task(tx: mpsc::Sender<Msg>) {
 fn action_to_msg(action: Action) -> Option<Msg> {
     match action {
         Action::Quit => Some(Msg::Quit),
+        Action::Open => Some(Msg::OpenSelectedPr),
+        Action::Back => Some(Msg::Back),
         Action::None => None,
         Action::Move { count, motion } => match motion {
             Motion::Down => Some(Msg::SelectionDelta(

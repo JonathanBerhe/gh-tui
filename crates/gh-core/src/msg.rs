@@ -4,7 +4,7 @@
 //! to `gh_input::Action` first; the binary maps `Action -> Msg`.
 
 use crate::{
-    pulls::{PrSummary, RepoRef},
+    pulls::{PrDetail, PrSummary, RepoRef},
     rate_limit::RateLimit,
 };
 
@@ -33,6 +33,14 @@ pub enum Msg {
     },
     /// The PR list fetch failed.
     PrListFailed(String),
+    /// User pressed Enter on the selected PR row.
+    OpenSelectedPr,
+    /// User pressed Backspace from a sub-screen.
+    Back,
+    /// PR detail GraphQL response landed.
+    PrDetailReady(PrDetail),
+    /// PR detail GraphQL request failed.
+    PrDetailFailed(String),
     /// Move the selection in the PR list.
     SelectionDelta(i32),
     /// Jump selection to first or last item.

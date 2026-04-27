@@ -38,6 +38,14 @@ pub fn status_bar(state: &State) -> Paragraph<'static> {
             format!("  {}", repo.slug()),
             Style::default().fg(Color::DarkGray),
         ),
+        Screen::LoadingDetail { repo, number } => Span::styled(
+            format!("  {} #{number}", repo.slug()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Screen::PrDetail { repo, detail, .. } => Span::styled(
+            format!("  {} #{}", repo.slug(), detail.number),
+            Style::default().fg(Color::DarkGray),
+        ),
         Screen::Welcome | Screen::Error { .. } => Span::raw(String::new()),
     };
 

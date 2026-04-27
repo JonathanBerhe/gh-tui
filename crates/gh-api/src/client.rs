@@ -40,6 +40,10 @@ pub enum ApiError {
     Status(u16),
     #[error("304 received but cache had no entry for {0}")]
     StaleNotModified(String),
+    #[error("graphql errors: {0}")]
+    GraphQl(String),
+    #[error("graphql request failed: {0}")]
+    GraphQlRequest(String),
 }
 
 /// A successful API response: parsed body plus metadata extracted from the
@@ -55,10 +59,15 @@ pub struct Client {
     http: reqwest::Client,
     /// Pre-rendered authorization header value (`Bearer <token>`).
     auth: String,
-    /// Base URL with trailing slash, e.g. `https://api.github.com/` or
+    /// REST base URL with trailing slash, e.g. `https://api.github.com/` or
     /// `https://ghe.example.com/api/v3/`. For tests, can be the wiremock
     /// URI directly (`http://127.0.0.1:1234/`).
     base: String,
+    /// GraphQL endpoint URL (no trailing slash):
+    /// `https://api.github.com/graphql` for github.com,
+    /// `https://<host>/api/graphql` for GHE,
+    /// `<host>/graphql` when host already has a scheme (test mode).
+    graphql_url: String,
     cache: Arc<EtagCache>,
     /// Optional sink for [`Msg::RateLimitUpdate`] events extracted from
     /// response headers. `None` in tests; `Some(tx)` once the binary's
@@ -74,6 +83,7 @@ impl Client {
     ///   (test mode against a mock server)
     pub fn new(token: &str, host: &str, cache: Arc<EtagCache>) -> Result<Self, ClientError> {
         let base = derive_base_url(host);
+        let graphql_url = derive_graphql_url(host);
         let http = reqwest::Client::builder()
             .user_agent(concat!("gh-tui/", env!("CARGO_PKG_VERSION")))
             .gzip(true)
@@ -82,6 +92,7 @@ impl Client {
             http,
             auth: format!("Bearer {token}"),
             base,
+            graphql_url,
             cache,
             tx: None,
         })
@@ -177,6 +188,67 @@ impl Client {
         let trimmed = path.trim_start_matches('/');
         format!("{}{}", self.base, trimmed)
     }
+
+    /// Issue a GraphQL request, parse the response as `Q`.
+    ///
+    /// Hand-rolled rather than using `cynic::http::ReqwestExt` because that
+    /// helper currently expects a different reqwest major than ours.
+    /// Surfaces rate-limit headers via the optional `tx` channel.
+    #[instrument(skip(self, vars))]
+    pub async fn graphql<Q, V>(&self, vars: V) -> Result<Q, ApiError>
+    where
+        Q: cynic::QueryBuilder<V> + serde::de::DeserializeOwned + 'static,
+        V: cynic::QueryVariables + serde::Serialize,
+    {
+        let operation = Q::build(vars);
+        let body = serde_json::to_vec(&operation)?;
+
+        let resp = self
+            .http
+            .post(&self.graphql_url)
+            .header(AUTHORIZATION, &self.auth)
+            .header(USER_AGENT, concat!("gh-tui/", env!("CARGO_PKG_VERSION")))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+
+        // Surface rate-limit headers from any GraphQL response.
+        if let Some(rl) = parse_rate_limit(resp.headers()) {
+            if let Some(tx) = &self.tx {
+                let _ = tx.try_send(Msg::RateLimitUpdate(rl));
+            }
+        }
+
+        if !status.is_success() {
+            return Err(ApiError::Status(status.as_u16()));
+        }
+
+        let bytes = resp.bytes().await?;
+        let parsed: cynic::GraphQlResponse<Q> = serde_json::from_slice(&bytes)?;
+
+        if let Some(data) = parsed.data {
+            if let Some(errors) = parsed.errors.as_ref() {
+                if !errors.is_empty() {
+                    debug!(?errors, "graphql errors alongside data");
+                }
+            }
+            return Ok(data);
+        }
+
+        let errs = parsed
+            .errors
+            .map(|es| {
+                es.into_iter()
+                    .map(|e| e.message)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|| "no data and no errors returned".to_string());
+        Err(ApiError::GraphQl(errs))
+    }
 }
 
 /// True iff the response's `Link` header advertises `rel="next"`.
@@ -219,6 +291,20 @@ fn derive_base_url(host: &str) -> String {
         "https://api.github.com/".to_string()
     } else {
         format!("https://{host}/api/v3/")
+    }
+}
+
+/// GraphQL endpoint URL. NOT under `/api/v3/` for GHE — that's the REST root;
+/// GraphQL lives at `<host>/api/graphql`.
+fn derive_graphql_url(host: &str) -> String {
+    if host.starts_with("http://") || host.starts_with("https://") {
+        let mut s = host.trim_end_matches('/').to_string();
+        s.push_str("/graphql");
+        s
+    } else if host == "github.com" {
+        "https://api.github.com/graphql".to_string()
+    } else {
+        format!("https://{host}/api/graphql")
     }
 }
 
@@ -284,5 +370,34 @@ mod tests {
     #[test]
     fn has_next_link_false_when_missing() {
         assert!(!has_next_link(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn graphql_url_for_github_com() {
+        assert_eq!(
+            derive_graphql_url("github.com"),
+            "https://api.github.com/graphql"
+        );
+    }
+
+    #[test]
+    fn graphql_url_for_ghe_uses_api_graphql_not_v3() {
+        // GHE GraphQL is at /api/graphql, NOT /api/v3/graphql.
+        assert_eq!(
+            derive_graphql_url("ghe.example.com"),
+            "https://ghe.example.com/api/graphql"
+        );
+    }
+
+    #[test]
+    fn graphql_url_passes_through_explicit_scheme() {
+        assert_eq!(
+            derive_graphql_url("http://127.0.0.1:1234"),
+            "http://127.0.0.1:1234/graphql"
+        );
+        assert_eq!(
+            derive_graphql_url("http://127.0.0.1:1234/"),
+            "http://127.0.0.1:1234/graphql"
+        );
     }
 }

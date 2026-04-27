@@ -50,6 +50,10 @@ pub enum Action {
         op: Operator,
         motion: Motion,
     },
+    /// Activate the current selection (Enter on a list row).
+    Open,
+    /// Pop one screen off the nav stack (Backspace from a sub-screen).
+    Back,
     /// No effect. Returned for keys that aren't bound.
     None,
 }

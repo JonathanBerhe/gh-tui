@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use gh_api::auth::{detect_auth, AuthOutcome};
-use gh_api::{fetch_open_prs_page, resolve_from_cwd, Client, EtagCache};
+use gh_api::{fetch_open_prs_page, fetch_pr_detail, resolve_from_cwd, Client, EtagCache};
 use gh_core::{Cmd, Msg};
 use tokio::sync::{mpsc::Sender, OnceCell};
 use tracing::{debug, warn};
@@ -94,6 +94,22 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                         has_more: p.has_more,
                     },
                     Err(e) => Msg::PrListFailed(e.to_string()),
+                };
+                let _ = ctx.tx.send(msg).await;
+            });
+        }
+        Cmd::FetchPrDetail { repo, number } => {
+            tokio::spawn(async move {
+                let Some(client) = ctx.client.get() else {
+                    let _ = ctx
+                        .tx
+                        .send(Msg::PrDetailFailed("auth not ready".to_string()))
+                        .await;
+                    return;
+                };
+                let msg = match fetch_pr_detail(client, &repo, number).await {
+                    Ok(detail) => Msg::PrDetailReady(detail),
+                    Err(e) => Msg::PrDetailFailed(e.to_string()),
                 };
                 let _ = ctx.tx.send(msg).await;
             });

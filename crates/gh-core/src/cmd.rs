@@ -10,4 +10,6 @@ pub enum Cmd {
     ResolveRepoFromCwd,
     /// Fetch a single page of open PRs (1-based page index).
     FetchPrPage { repo: RepoRef, page: u32 },
+    /// Fetch the detail for a single PR.
+    FetchPrDetail { repo: RepoRef, number: u64 },
 }
