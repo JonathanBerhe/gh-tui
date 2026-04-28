@@ -16,7 +16,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Action, Motion, Operator};
+use crate::action::{Action, Direction, Motion, Operator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
@@ -141,6 +141,10 @@ impl Resolver {
                 Resolution::Action(Action::Back)
             }
 
+            // Section jumps (review threads, diff hunks).
+            KeyCode::Char('{') => self.complete_jump_section(Direction::Prev),
+            KeyCode::Char('}') => self.complete_jump_section(Direction::Next),
+
             // Single-key motions.
             KeyCode::Char('h') | KeyCode::Left => self.complete_motion(Motion::Left),
             KeyCode::Char('j') | KeyCode::Down => self.complete_motion(Motion::Down),
@@ -185,6 +189,14 @@ impl Resolver {
                 Resolution::Pending
             }
         }
+    }
+
+    fn complete_jump_section(&mut self, direction: Direction) -> Resolution {
+        // `{`/`}` accept a leading count (vim-style); ignore any active operator
+        // — section jumps don't compose with operators in this app.
+        let count = self.pending.count1.unwrap_or(1);
+        self.reset();
+        Resolution::Action(Action::JumpSection { count, direction })
     }
 
     fn complete_motion(&mut self, motion: Motion) -> Resolution {
@@ -688,6 +700,43 @@ mod tests {
     #[test]
     fn backspace_emits_back() {
         assert_eq!(final_action(&[k(KeyCode::Backspace)]), Action::Back);
+    }
+
+    #[test]
+    fn lbrace_emits_jump_section_prev() {
+        let r = feed_seq(&[ch('{')]);
+        assert_eq!(
+            r[0],
+            Resolution::Action(Action::JumpSection {
+                count: 1,
+                direction: Direction::Prev
+            })
+        );
+    }
+
+    #[test]
+    fn rbrace_emits_jump_section_next() {
+        let r = feed_seq(&[ch('}')]);
+        assert_eq!(
+            r[0],
+            Resolution::Action(Action::JumpSection {
+                count: 1,
+                direction: Direction::Next
+            })
+        );
+    }
+
+    #[test]
+    fn count_then_rbrace_jumps_n_sections() {
+        let r = feed_seq(&[ch('2'), ch('}')]);
+        assert_eq!(r[0], Resolution::Pending);
+        assert_eq!(
+            r[1],
+            Resolution::Action(Action::JumpSection {
+                count: 2,
+                direction: Direction::Next
+            })
+        );
     }
 
     #[test]

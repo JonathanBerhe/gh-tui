@@ -108,7 +108,12 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                     return;
                 };
                 let msg = match fetch_pr_detail(client, &repo, number).await {
-                    Ok(detail) => Msg::PrDetailReady(detail),
+                    Ok(detail) => {
+                        let body_lines =
+                            u16::try_from(gh_render::render_markdown(&detail.body).len())
+                                .unwrap_or(u16::MAX);
+                        Msg::PrDetailReady { detail, body_lines }
+                    }
                     Err(e) => Msg::PrDetailFailed(e.to_string()),
                 };
                 let _ = ctx.tx.send(msg).await;

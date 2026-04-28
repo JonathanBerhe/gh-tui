@@ -8,8 +8,8 @@ use anyhow::Result;
 use crossterm::event::{Event as CtEvent, EventStream};
 use futures::StreamExt;
 use gh_api::{cache_db_path, EtagCache};
-use gh_core::{initial_commands, reduce, Cmd, Msg, RepoRef, SelectionJump, State};
-use gh_input::{Action, Motion, Resolution, Resolver};
+use gh_core::{initial_commands, reduce, Cmd, JumpDirection, Msg, RepoRef, SelectionJump, State};
+use gh_input::{Action, Direction, Motion, Resolution, Resolver};
 use tokio::sync::mpsc;
 use tracing::{debug, info_span, warn};
 
@@ -121,6 +121,13 @@ fn action_to_msg(action: Action) -> Option<Msg> {
         Action::Quit => Some(Msg::Quit),
         Action::Open => Some(Msg::OpenSelectedPr),
         Action::Back => Some(Msg::Back),
+        Action::JumpSection { count, direction } => Some(Msg::ReviewJump {
+            count,
+            direction: match direction {
+                Direction::Next => JumpDirection::Next,
+                Direction::Prev => JumpDirection::Prev,
+            },
+        }),
         Action::None => None,
         Action::Move { count, motion } => match motion {
             Motion::Down => Some(Msg::SelectionDelta(

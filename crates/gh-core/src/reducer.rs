@@ -3,13 +3,20 @@
 use crate::{
     auth::AuthState,
     cmd::Cmd,
-    msg::{Msg, SelectionJump},
+    msg::{JumpDirection, Msg, SelectionJump},
     state::{Screen, State},
 };
 
 /// Trigger an auto-fetch of the next page when the selection lands within
 /// this many items of the loaded boundary.
 const PAGINATION_LOAD_THRESHOLD: usize = 5;
+
+/// Approximate rendered height of one review entry in the PR detail view
+/// (header line + body excerpt line + blank). Drives `{`/`}` jump targets.
+const REVIEW_BLOCK_HEIGHT: u16 = 3;
+/// Padding between body and reviews block: separator + "Reviews" header
+/// + blank line.
+const REVIEWS_HEADER_OFFSET: u16 = 3;
 
 /// Commands to dispatch on startup, before any user input.
 ///
@@ -140,15 +147,17 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 }
             }
         }
-        Msg::PrDetailReady(detail) => {
+        Msg::PrDetailReady { detail, body_lines } => {
             // Only consume if we're still waiting for THIS detail. Stale
             // responses (number mismatch or screen changed) drop silently.
             if let Screen::LoadingDetail { repo, number } = &state.screen {
                 if detail.number == *number {
+                    let review_offsets = compute_review_offsets(body_lines, detail.reviews.len());
                     state.screen = Screen::PrDetail {
                         repo: repo.clone(),
                         detail,
                         scroll: 0,
+                        review_offsets,
                     };
                 }
             }
@@ -196,7 +205,10 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 let new = i32::from(*scroll).saturating_add(delta);
                 *scroll = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
             }
-            _ => {}
+            Screen::Welcome
+            | Screen::Loading { .. }
+            | Screen::LoadingDetail { .. }
+            | Screen::Error { .. } => {}
         },
         Msg::SelectionJump(jump) => match &mut state.screen {
             Screen::PrList {
@@ -215,11 +227,66 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             }
             _ => {}
         },
+        Msg::ReviewJump { count, direction } => {
+            if let Screen::PrDetail {
+                scroll,
+                review_offsets,
+                ..
+            } = &mut state.screen
+            {
+                if !review_offsets.is_empty() {
+                    *scroll = next_review_scroll(*scroll, review_offsets, count, direction);
+                }
+            }
+        }
         Msg::RateLimitUpdate(rl) => {
             state.rate_limit = Some(rl);
         }
     }
     (state, cmds)
+}
+
+/// Compute the line offset of each review entry in the PR detail body view.
+/// Result is empty when there are no reviews.
+fn compute_review_offsets(body_lines: u16, n_reviews: usize) -> Vec<u16> {
+    if n_reviews == 0 {
+        return Vec::new();
+    }
+    let base = body_lines.saturating_add(REVIEWS_HEADER_OFFSET);
+    (0..n_reviews)
+        .map(|i| {
+            let step = REVIEW_BLOCK_HEIGHT.saturating_mul(u16::try_from(i).unwrap_or(u16::MAX));
+            base.saturating_add(step)
+        })
+        .collect()
+}
+
+/// Pick the next/prev review's scroll position relative to the current one.
+fn next_review_scroll(
+    current: u16,
+    offsets: &[u16],
+    count: usize,
+    direction: JumpDirection,
+) -> u16 {
+    debug_assert!(!offsets.is_empty());
+    let count = count.max(1);
+    match direction {
+        JumpDirection::Next => {
+            // Find first offset strictly greater than current; advance count-1 more.
+            let start = offsets
+                .iter()
+                .position(|&o| o > current)
+                .unwrap_or(offsets.len() - 1);
+            let target = (start + count - 1).min(offsets.len() - 1);
+            offsets[target]
+        }
+        JumpDirection::Prev => {
+            // Find last offset strictly less than current; retreat count-1 more.
+            let start = offsets.iter().rposition(|&o| o < current).unwrap_or(0);
+            let target = start.saturating_sub(count - 1);
+            offsets[target]
+        }
+    }
 }
 
 #[cfg(test)]
@@ -665,6 +732,13 @@ mod tests {
             additions: 10,
             deletions: 2,
             review_decision: crate::pulls::ReviewDecision::None,
+            reviews: Vec::new(),
+            checks: crate::pulls::ChecksSummary {
+                state: crate::pulls::ChecksState::Unknown,
+                passing: 0,
+                failing: 0,
+                pending: 0,
+            },
         }
     }
 
@@ -712,7 +786,13 @@ mod tests {
             }],
             ..State::default()
         };
-        let (s2, _) = reduce(s, Msg::PrDetailReady(pr_detail(7)));
+        let (s2, _) = reduce(
+            s,
+            Msg::PrDetailReady {
+                detail: pr_detail(7),
+                body_lines: 0,
+            },
+        );
         let Screen::PrDetail { detail, scroll, .. } = s2.screen else {
             panic!("expected PrDetail");
         };
@@ -730,7 +810,13 @@ mod tests {
             },
             ..State::default()
         };
-        let (s2, _) = reduce(s, Msg::PrDetailReady(pr_detail(99)));
+        let (s2, _) = reduce(
+            s,
+            Msg::PrDetailReady {
+                detail: pr_detail(99),
+                body_lines: 0,
+            },
+        );
         assert!(matches!(s2.screen, Screen::LoadingDetail { number: 7, .. }));
     }
 
@@ -778,6 +864,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 5,
+                review_offsets: Vec::new(),
             },
             nav_stack: vec![prior],
             ..State::default()
@@ -841,6 +928,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 5,
+                review_offsets: Vec::new(),
             },
             ..State::default()
         };
@@ -858,6 +946,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 0,
+                review_offsets: Vec::new(),
             },
             ..State::default()
         };
@@ -875,6 +964,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 42,
+                review_offsets: Vec::new(),
             },
             ..State::default()
         };
@@ -885,6 +975,134 @@ mod tests {
         assert_eq!(scroll, 0);
     }
 
+    fn detail_with_reviews(n_reviews: usize) -> State {
+        State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: compute_review_offsets(10, n_reviews),
+            },
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn review_jump_next_advances_to_first_offset() {
+        let s = detail_with_reviews(3);
+        let (s2, _) = reduce(
+            s,
+            Msg::ReviewJump {
+                count: 1,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!()
+        };
+        assert_eq!(scroll, review_offsets[0]);
+    }
+
+    #[test]
+    fn review_jump_next_with_count_skips() {
+        let s = detail_with_reviews(5);
+        let (s2, _) = reduce(
+            s,
+            Msg::ReviewJump {
+                count: 3,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!()
+        };
+        assert_eq!(scroll, review_offsets[2]);
+    }
+
+    #[test]
+    fn review_jump_at_last_review_stays() {
+        let mut s = detail_with_reviews(3);
+        if let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = &mut s.screen
+        {
+            *scroll = review_offsets[2];
+        }
+        let (s2, _) = reduce(
+            s,
+            Msg::ReviewJump {
+                count: 1,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!()
+        };
+        assert_eq!(scroll, review_offsets[2], "last review is a fixed point");
+    }
+
+    #[test]
+    fn review_jump_prev_returns_to_earlier_offset() {
+        let mut s = detail_with_reviews(3);
+        if let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = &mut s.screen
+        {
+            *scroll = review_offsets[2];
+        }
+        let (s2, _) = reduce(
+            s,
+            Msg::ReviewJump {
+                count: 1,
+                direction: JumpDirection::Prev,
+            },
+        );
+        let Screen::PrDetail {
+            scroll,
+            review_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!()
+        };
+        assert_eq!(scroll, review_offsets[1]);
+    }
+
+    #[test]
+    fn review_jump_with_no_reviews_is_noop() {
+        let s = detail_with_reviews(0);
+        let (s2, _) = reduce(
+            s,
+            Msg::ReviewJump {
+                count: 1,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!()
+        };
+        assert_eq!(scroll, 0, "no offsets → no movement");
+    }
+
     #[test]
     fn body_scroll_jump_last_sets_scroll_to_u16_max() {
         let s = State {
@@ -892,6 +1110,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 0,
+                review_offsets: Vec::new(),
             },
             ..State::default()
         };
@@ -909,6 +1128,7 @@ mod tests {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 0,
+                review_offsets: Vec::new(),
             },
             ..State::default()
         };
