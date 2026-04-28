@@ -48,12 +48,14 @@ pub enum Screen {
     },
     /// Waiting for PR detail GraphQL response.
     LoadingDetail { repo: RepoRef, number: u64 },
-    /// PR detail rendered. `scroll` is in logical-line units (Phase 4 PR #2
-    /// hooks this up; Phase 4 PR #1 leaves it at 0).
+    /// PR detail rendered. `scroll` is in logical-line units; `review_offsets`
+    /// is the pre-computed line offset of each review entry, used by `{`/`}`
+    /// to jump between reviews.
     PrDetail {
         repo: RepoRef,
         detail: PrDetail,
         scroll: u16,
+        review_offsets: Vec<u16>,
     },
     /// Unrecoverable error; user-facing message + optional hint.
     Error {

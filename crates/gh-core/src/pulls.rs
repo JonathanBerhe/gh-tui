@@ -121,8 +121,70 @@ impl ReviewDecision {
     }
 }
 
-/// Full PR detail (Phase 4 minimum). Phase 4 PR #3 grows this with reviews
-/// and checks.
+/// Compact view of a single review for the PR detail screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewSummary {
+    pub author: String,
+    pub state: ReviewState,
+    pub body_excerpt: String,
+    pub submitted_at: DateTime<Utc>,
+}
+
+/// Per-review state. Maps from `PullRequestReviewState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewState {
+    Pending,
+    Commented,
+    Approved,
+    ChangesRequested,
+    Dismissed,
+}
+
+impl ReviewState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Commented => "COMMENTED",
+            Self::Approved => "APPROVED",
+            Self::ChangesRequested => "CHANGES_REQUESTED",
+            Self::Dismissed => "DISMISSED",
+        }
+    }
+}
+
+/// Aggregate status of CI checks for the head commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecksSummary {
+    pub state: ChecksState,
+    pub passing: u32,
+    pub failing: u32,
+    pub pending: u32,
+}
+
+impl ChecksSummary {
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.passing + self.failing + self.pending
+    }
+
+    /// `true` when the PR has no checks configured at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0 && matches!(self.state, ChecksState::Unknown)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChecksState {
+    Success,
+    Failure,
+    Pending,
+    /// No status checks have run / no rollup yet.
+    Unknown,
+}
+
+/// Full PR detail. Lossy projection of GitHub's GraphQL `PullRequest`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrDetail {
     pub number: u64,
@@ -137,6 +199,8 @@ pub struct PrDetail {
     pub additions: u32,
     pub deletions: u32,
     pub review_decision: ReviewDecision,
+    pub reviews: Vec<ReviewSummary>,
+    pub checks: ChecksSummary,
 }
 
 #[cfg(test)]

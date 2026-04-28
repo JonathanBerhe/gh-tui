@@ -54,6 +54,16 @@ pub enum Action {
     Open,
     /// Pop one screen off the nav stack (Backspace from a sub-screen).
     Back,
+    /// Jump to the next/previous "section" within the current screen
+    /// (review entry, diff hunk, etc.). `count` defaults to 1 when no
+    /// pre-count was given.
+    JumpSection { count: usize, direction: Direction },
     /// No effect. Returned for keys that aren't bound.
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Next,
+    Prev,
 }

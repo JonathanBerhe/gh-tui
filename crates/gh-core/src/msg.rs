@@ -37,14 +37,27 @@ pub enum Msg {
     OpenSelectedPr,
     /// User pressed Backspace from a sub-screen.
     Back,
-    /// PR detail GraphQL response landed.
-    PrDetailReady(PrDetail),
+    /// PR detail GraphQL response landed. `body_lines` is the number of
+    /// rendered markdown lines (computed by the worker via `gh_render`) so
+    /// the reducer can pre-compute review-section scroll offsets without
+    /// pulling `gh-render` into `gh-core`.
+    PrDetailReady {
+        detail: PrDetail,
+        body_lines: u16,
+    },
     /// PR detail GraphQL request failed.
     PrDetailFailed(String),
     /// Move the selection in the PR list.
     SelectionDelta(i32),
     /// Jump selection to first or last item.
     SelectionJump(SelectionJump),
+    /// Jump scroll position to the next/prev section (review entry,
+    /// diff hunk, etc.) within the current screen. Counted via vim-style
+    /// `count{` / `count}`.
+    ReviewJump {
+        count: usize,
+        direction: JumpDirection,
+    },
     /// Fresh rate-limit reading from response headers.
     RateLimitUpdate(RateLimit),
     Quit,
@@ -54,4 +67,10 @@ pub enum Msg {
 pub enum SelectionJump {
     First,
     Last,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpDirection {
+    Next,
+    Prev,
 }

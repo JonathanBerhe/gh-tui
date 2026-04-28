@@ -15,5 +15,5 @@
 pub mod action;
 pub mod resolver;
 
-pub use action::{Action, Motion, Operator};
+pub use action::{Action, Direction, Motion, Operator};
 pub use resolver::{Resolution, Resolver};

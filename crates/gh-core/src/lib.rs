@@ -16,9 +16,10 @@ pub mod state;
 
 pub use auth::AuthState;
 pub use cmd::Cmd;
-pub use msg::{Msg, SelectionJump};
+pub use msg::{JumpDirection, Msg, SelectionJump};
 pub use pulls::{
-    Mergeable, ParseRepoRefError, PrDetail, PrState, PrSummary, RepoRef, ReviewDecision,
+    ChecksState, ChecksSummary, Mergeable, ParseRepoRefError, PrDetail, PrState, PrSummary,
+    RepoRef, ReviewDecision, ReviewState, ReviewSummary,
 };
 pub use rate_limit::{RateLimit, Tier};
 pub use reducer::{initial_commands, reduce};

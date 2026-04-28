@@ -2,16 +2,16 @@
 //!
 //! Maps GitHub's GraphQL types to `gh_core::PrDetail` at the seam.
 
-use gh_core::pulls::{Mergeable, PrDetail, PrState, RepoRef, ReviewDecision};
+use chrono::{DateTime as ChronoDateTime, Utc};
+use gh_core::pulls::{
+    ChecksState, ChecksSummary, Mergeable, PrDetail, PrState, RepoRef, ReviewDecision, ReviewState,
+    ReviewSummary,
+};
 use thiserror::Error;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use super::schema;
 use crate::client::{ApiError, Client};
-
-// `super::schema` (a sibling module) hosts cynic's schema bindings via
-// `cynic::use_schema!`. The derives reference `schema::*` types in their
-// generated code; the `use super::schema;` above puts the module in scope.
 
 // ── Query types (cynic-derived) ────────────────────────────────────────────
 
@@ -59,6 +59,10 @@ pub struct PullRequest {
     pub additions: i32,
     pub deletions: i32,
     pub review_decision: Option<PullRequestReviewDecision>,
+    #[arguments(first: 20)]
+    pub latest_reviews: Option<PullRequestReviewConnection>,
+    #[arguments(last: 1)]
+    pub commits: PullRequestCommitConnection,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
@@ -93,6 +97,133 @@ pub enum PullRequestReviewDecision {
     ChangesRequested,
     ReviewRequired,
 }
+
+// ── Reviews ────────────────────────────────────────────────────────────────
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    schema_path = "schema.graphql",
+    graphql_type = "PullRequestReviewConnection"
+)]
+pub struct PullRequestReviewConnection {
+    pub nodes: Option<Vec<Option<PullRequestReview>>>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "PullRequestReview")]
+pub struct PullRequestReview {
+    pub author: Option<Actor>,
+    pub state: PullRequestReviewState,
+    pub body: String,
+    pub submitted_at: Option<DateTime>,
+}
+
+#[derive(cynic::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[cynic(
+    schema_path = "schema.graphql",
+    graphql_type = "PullRequestReviewState"
+)]
+pub enum PullRequestReviewState {
+    Pending,
+    Commented,
+    Approved,
+    ChangesRequested,
+    Dismissed,
+}
+
+// ── Status checks ──────────────────────────────────────────────────────────
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    schema_path = "schema.graphql",
+    graphql_type = "PullRequestCommitConnection"
+)]
+pub struct PullRequestCommitConnection {
+    pub nodes: Option<Vec<Option<PullRequestCommit>>>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "PullRequestCommit")]
+pub struct PullRequestCommit {
+    pub commit: Commit,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "Commit")]
+pub struct Commit {
+    pub status_check_rollup: Option<StatusCheckRollup>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "StatusCheckRollup")]
+pub struct StatusCheckRollup {
+    pub state: StatusState,
+    #[arguments(first: 50)]
+    pub contexts: StatusCheckRollupContextConnection,
+}
+
+#[derive(cynic::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "StatusState")]
+pub enum StatusState {
+    Expected,
+    Error,
+    Failure,
+    Pending,
+    Success,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    schema_path = "schema.graphql",
+    graphql_type = "StatusCheckRollupContextConnection"
+)]
+pub struct StatusCheckRollupContextConnection {
+    pub nodes: Option<Vec<Option<StatusCheckRollupContext>>>,
+}
+
+#[derive(cynic::InlineFragments, Debug)]
+#[cynic(
+    schema_path = "schema.graphql",
+    graphql_type = "StatusCheckRollupContext"
+)]
+pub enum StatusCheckRollupContext {
+    CheckRun(CheckRun),
+    StatusContext(StatusContext),
+    #[cynic(fallback)]
+    Unknown,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "CheckRun")]
+pub struct CheckRun {
+    pub conclusion: Option<CheckConclusionState>,
+}
+
+#[derive(cynic::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "CheckConclusionState")]
+pub enum CheckConclusionState {
+    ActionRequired,
+    TimedOut,
+    Cancelled,
+    Failure,
+    Success,
+    Neutral,
+    Skipped,
+    Stale,
+    StartupFailure,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(schema_path = "schema.graphql", graphql_type = "StatusContext")]
+pub struct StatusContext {
+    pub state: StatusState,
+}
+
+// ── Custom scalars ─────────────────────────────────────────────────────────
+
+#[derive(cynic::Scalar, Debug, Clone)]
+#[cynic(schema_module = "schema", graphql_type = "DateTime")]
+pub struct DateTime(pub String);
 
 // ── Fetcher ────────────────────────────────────────────────────────────────
 
@@ -134,6 +265,9 @@ pub async fn fetch_pr_detail(
 }
 
 fn map_pr(p: PullRequest) -> PrDetail {
+    let reviews = map_reviews(p.latest_reviews);
+    let checks = map_checks(&p.commits);
+
     PrDetail {
         number: u64::try_from(p.number).unwrap_or(0),
         title: p.title,
@@ -163,5 +297,115 @@ fn map_pr(p: PullRequest) -> PrDetail {
             Some(PullRequestReviewDecision::ReviewRequired) => ReviewDecision::ReviewRequired,
             None => ReviewDecision::None,
         },
+        reviews,
+        checks,
+    }
+}
+
+fn map_reviews(conn: Option<PullRequestReviewConnection>) -> Vec<ReviewSummary> {
+    let Some(conn) = conn else { return Vec::new() };
+    let Some(nodes) = conn.nodes else {
+        return Vec::new();
+    };
+    nodes.into_iter().flatten().map(map_review).collect()
+}
+
+fn map_review(r: PullRequestReview) -> ReviewSummary {
+    ReviewSummary {
+        author: r
+            .author
+            .map(|a| a.login)
+            .unwrap_or_else(|| "<unknown>".to_string()),
+        state: match r.state {
+            PullRequestReviewState::Pending => ReviewState::Pending,
+            PullRequestReviewState::Commented => ReviewState::Commented,
+            PullRequestReviewState::Approved => ReviewState::Approved,
+            PullRequestReviewState::ChangesRequested => ReviewState::ChangesRequested,
+            PullRequestReviewState::Dismissed => ReviewState::Dismissed,
+        },
+        body_excerpt: excerpt(&r.body, 200),
+        submitted_at: r
+            .submitted_at
+            .and_then(|dt| dt.0.parse::<ChronoDateTime<Utc>>().ok())
+            .unwrap_or_else(Utc::now),
+    }
+}
+
+fn excerpt(s: &str, max: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(max).collect();
+    format!("{head}…")
+}
+
+fn map_checks(conn: &PullRequestCommitConnection) -> ChecksSummary {
+    let rollup = conn
+        .nodes
+        .as_ref()
+        .and_then(|nodes| nodes.iter().flatten().next())
+        .and_then(|c| c.commit.status_check_rollup.as_ref());
+
+    let Some(rollup) = rollup else {
+        return ChecksSummary {
+            state: ChecksState::Unknown,
+            passing: 0,
+            failing: 0,
+            pending: 0,
+        };
+    };
+
+    let state = match rollup.state {
+        StatusState::Success => ChecksState::Success,
+        StatusState::Failure | StatusState::Error => ChecksState::Failure,
+        StatusState::Pending | StatusState::Expected => ChecksState::Pending,
+    };
+
+    let mut passing = 0u32;
+    let mut failing = 0u32;
+    let mut pending = 0u32;
+
+    let nodes = rollup
+        .contexts
+        .nodes
+        .as_ref()
+        .map(|v| v.iter().flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for ctx in nodes {
+        match ctx {
+            StatusCheckRollupContext::CheckRun(cr) => match cr.conclusion {
+                Some(CheckConclusionState::Success | CheckConclusionState::Neutral) => {
+                    passing += 1;
+                }
+                Some(
+                    CheckConclusionState::Failure
+                    | CheckConclusionState::TimedOut
+                    | CheckConclusionState::Cancelled
+                    | CheckConclusionState::ActionRequired
+                    | CheckConclusionState::StartupFailure,
+                ) => failing += 1,
+                Some(CheckConclusionState::Skipped | CheckConclusionState::Stale) => {
+                    // Don't count skipped/stale toward any bucket.
+                }
+                None => pending += 1,
+            },
+            StatusCheckRollupContext::StatusContext(sc) => match sc.state {
+                StatusState::Success => passing += 1,
+                StatusState::Failure | StatusState::Error => failing += 1,
+                StatusState::Pending | StatusState::Expected => pending += 1,
+            },
+            StatusCheckRollupContext::Unknown => {
+                warn!("unknown status check rollup context type");
+            }
+        }
+    }
+
+    ChecksSummary {
+        state,
+        passing,
+        failing,
+        pending,
     }
 }
