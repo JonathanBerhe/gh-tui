@@ -1,0 +1,5 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+See the documentation (https://example.com/docs) for details.

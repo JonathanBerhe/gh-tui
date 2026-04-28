@@ -126,12 +126,15 @@ fn separator() -> Paragraph<'static> {
 }
 
 fn body(d: &PrDetail, scroll: u16) -> Paragraph<'static> {
-    let body_text = if d.body.trim().is_empty() {
-        "(no description)".to_string()
+    let lines = if d.body.trim().is_empty() {
+        vec![Line::from(Span::styled(
+            "(no description)",
+            Style::default().fg(Color::DarkGray),
+        ))]
     } else {
-        d.body.clone()
+        gh_render::render_markdown(&d.body)
     };
-    Paragraph::new(body_text)
+    Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0))
         .block(Block::default().borders(Borders::NONE))

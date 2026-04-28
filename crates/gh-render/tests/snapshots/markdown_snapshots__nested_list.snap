@@ -1,0 +1,8 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+  • top one
+    ◦ nested A
+    ◦ nested B
+  • top two

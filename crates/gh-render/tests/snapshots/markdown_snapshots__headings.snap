@@ -1,0 +1,15 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+# Heading 1
+
+## Heading 2
+
+### Heading 3
+
+#### Heading 4
+
+##### Heading 5
+
+###### Heading 6

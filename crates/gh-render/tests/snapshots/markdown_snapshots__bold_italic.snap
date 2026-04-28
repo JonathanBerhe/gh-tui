@@ -1,0 +1,5 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+bold and italic and both and struck together.

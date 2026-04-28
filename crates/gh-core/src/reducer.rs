@@ -166,16 +166,15 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
         Msg::Back => {
             state.screen = state.nav_stack.pop().unwrap_or(Screen::Welcome);
         }
-        Msg::SelectionDelta(delta) => {
-            if let Screen::PrList {
+        Msg::SelectionDelta(delta) => match &mut state.screen {
+            Screen::PrList {
                 repo,
                 items,
                 selected,
                 pages_loaded,
                 has_more,
                 loading_next,
-            } = &mut state.screen
-            {
+            } => {
                 let len = items.len();
                 if len > 0 {
                     let new = (*selected as i64) + i64::from(delta);
@@ -193,20 +192,29 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     }
                 }
             }
-        }
-        Msg::SelectionJump(jump) => {
-            if let Screen::PrList {
-                items, selected, ..
-            } = &mut state.screen
-            {
-                if !items.is_empty() {
-                    *selected = match jump {
-                        SelectionJump::First => 0,
-                        SelectionJump::Last => items.len() - 1,
-                    };
-                }
+            Screen::PrDetail { scroll, .. } => {
+                let new = i32::from(*scroll).saturating_add(delta);
+                *scroll = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
             }
-        }
+            _ => {}
+        },
+        Msg::SelectionJump(jump) => match &mut state.screen {
+            Screen::PrList {
+                items, selected, ..
+            } if !items.is_empty() => {
+                *selected = match jump {
+                    SelectionJump::First => 0,
+                    SelectionJump::Last => items.len() - 1,
+                };
+            }
+            Screen::PrDetail { scroll, .. } => {
+                *scroll = match jump {
+                    SelectionJump::First => 0,
+                    SelectionJump::Last => u16::MAX,
+                };
+            }
+            _ => {}
+        },
         Msg::RateLimitUpdate(rl) => {
             state.rate_limit = Some(rl);
         }
@@ -824,6 +832,74 @@ mod tests {
         };
         let (s2, _) = reduce(s, Msg::Back);
         assert!(matches!(s2.screen, Screen::PrList { .. }));
+    }
+
+    #[test]
+    fn body_scroll_in_pr_detail_increments_scroll() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 5,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(3));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 8);
+    }
+
+    #[test]
+    fn body_scroll_at_zero_does_not_underflow() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(-5));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 0);
+    }
+
+    #[test]
+    fn body_scroll_jump_first_resets_scroll() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 42,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionJump(SelectionJump::First));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 0);
+    }
+
+    #[test]
+    fn body_scroll_jump_last_sets_scroll_to_u16_max() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionJump(SelectionJump::Last));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, u16::MAX);
     }
 
     #[test]
