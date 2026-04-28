@@ -1,0 +1,15 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+Bulleted:
+
+  • alpha
+  • beta
+  • gamma
+
+Ordered:
+
+  1. one
+  2. two
+  3. three

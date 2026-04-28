@@ -1,0 +1,9 @@
+---
+source: crates/gh-render/tests/markdown_snapshots.rs
+expression: flatten(& input)
+---
+A diagram:
+
+[mermaid diagram (3 lines)]
+
+After.
