@@ -53,6 +53,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # Time
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
+# Rendering
+pulldown-cmark = { version = "0.13", default-features = false }
+
 # Paths
 directories = "6"
 
