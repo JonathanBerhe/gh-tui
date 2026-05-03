@@ -121,6 +121,7 @@ fn action_to_msg(action: Action) -> Option<Msg> {
         Action::Quit => Some(Msg::Quit),
         Action::Open => Some(Msg::OpenSelectedPr),
         Action::OpenDiff => Some(Msg::OpenDiff),
+        Action::ToggleSplitView => Some(Msg::ToggleDiffViewMode),
         Action::Back => Some(Msg::Back),
         Action::JumpSection { count, direction } => Some(Msg::SectionJump {
             count,

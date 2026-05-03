@@ -4,7 +4,7 @@ use crate::{
     auth::AuthState,
     cmd::Cmd,
     msg::{JumpDirection, Msg, SelectionJump},
-    state::{Screen, State},
+    state::{DiffViewMode, Screen, State},
 };
 
 /// Trigger an auto-fetch of the next page when the selection lands within
@@ -212,6 +212,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                         files,
                         scroll: 0,
                         file_offsets,
+                        view_mode: DiffViewMode::default(),
                     };
                 }
             }
@@ -222,6 +223,18 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     message: format!("PR diff failed: {reason}"),
                     hint: None,
                 };
+            }
+        }
+        Msg::ToggleDiffViewMode => {
+            // Only meaningful inside DiffView. The current scroll value is
+            // preserved on toggle: split rows roughly align with unified
+            // line offsets for context-heavy diffs, and the disruption of
+            // resetting to 0 outweighs the small drift on toggle. File
+            // offsets stay computed for unified layout — section-jump may
+            // land slightly off in split mode until a follow-up adds
+            // per-mode offsets.
+            if let Screen::DiffView { view_mode, .. } = &mut state.screen {
+                *view_mode = view_mode.toggled();
             }
         }
         Msg::Back => {
@@ -1356,6 +1369,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                view_mode: DiffViewMode::default(),
             },
             nav_stack: vec![prior],
             ..State::default()
@@ -1374,6 +1388,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                view_mode: DiffViewMode::default(),
             },
             ..State::default()
         };
@@ -1393,6 +1408,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                view_mode: DiffViewMode::default(),
             },
             ..State::default()
         };
@@ -1412,6 +1428,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
                 scroll: 0,
                 file_offsets: vec![0, 10, 20],
+                view_mode: DiffViewMode::default(),
             },
             ..State::default()
         };
@@ -1429,6 +1446,82 @@ mod tests {
     }
 
     #[test]
+    fn toggle_diff_view_mode_in_diff_view_flips_mode() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs")],
+                scroll: 0,
+                file_offsets: vec![0],
+                view_mode: DiffViewMode::Unified,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::ToggleDiffViewMode);
+        let Screen::DiffView { view_mode, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(view_mode, DiffViewMode::Split);
+        let (s3, _) = reduce(
+            State {
+                screen: Screen::DiffView {
+                    repo: repo(),
+                    number: 7,
+                    files: vec![file_patch("a.rs")],
+                    scroll: 0,
+                    file_offsets: vec![0],
+                    view_mode,
+                },
+                ..State::default()
+            },
+            Msg::ToggleDiffViewMode,
+        );
+        let Screen::DiffView { view_mode, .. } = s3.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(
+            view_mode,
+            DiffViewMode::Unified,
+            "second toggle returns home"
+        );
+    }
+
+    #[test]
+    fn toggle_diff_view_mode_outside_diff_view_is_noop() {
+        let (s, _) = reduce(State::default(), Msg::ToggleDiffViewMode);
+        assert!(matches!(s.screen, Screen::Welcome));
+    }
+
+    #[test]
+    fn toggle_diff_view_mode_preserves_scroll_and_offsets() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs"), file_patch("b.rs")],
+                scroll: 42,
+                file_offsets: vec![0, 30],
+                view_mode: DiffViewMode::Unified,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::ToggleDiffViewMode);
+        let Screen::DiffView {
+            view_mode,
+            scroll,
+            file_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(view_mode, DiffViewMode::Split);
+        assert_eq!(scroll, 42, "scroll preserved across toggle");
+        assert_eq!(file_offsets, vec![0, 30], "offsets preserved across toggle");
+    }
+
+    #[test]
     fn section_jump_with_no_files_is_noop() {
         let s = State {
             screen: Screen::DiffView {
@@ -1437,6 +1530,7 @@ mod tests {
                 files: vec![],
                 scroll: 0,
                 file_offsets: vec![],
+                view_mode: DiffViewMode::default(),
             },
             ..State::default()
         };

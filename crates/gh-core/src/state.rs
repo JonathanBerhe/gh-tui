@@ -25,6 +25,26 @@ impl Mode {
     }
 }
 
+/// How the diff body is laid out when [`Screen::DiffView`] is active.
+/// `Unified` is the default vim/git layout; `Split` shows pre-image on
+/// the left and post-image on the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffViewMode {
+    #[default]
+    Unified,
+    Split,
+}
+
+impl DiffViewMode {
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Unified => Self::Split,
+            Self::Split => Self::Unified,
+        }
+    }
+}
+
 /// What the body of the screen is currently showing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -68,6 +88,7 @@ pub enum Screen {
         files: Vec<FilePatch>,
         scroll: u16,
         file_offsets: Vec<u16>,
+        view_mode: DiffViewMode,
     },
     /// Unrecoverable error; user-facing message + optional hint.
     Error {

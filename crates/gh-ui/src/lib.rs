@@ -43,8 +43,13 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         Screen::LoadingDiff { repo, number } => {
             draw_loading(&format!("{} #{number} diff", repo.slug()), frame, chunks[0]);
         }
-        Screen::DiffView { files, scroll, .. } => {
-            screens::diff_view::draw(files, *scroll, frame, chunks[0]);
+        Screen::DiffView {
+            files,
+            scroll,
+            view_mode,
+            ..
+        } => {
+            screens::diff_view::draw(files, *scroll, *view_mode, frame, chunks[0]);
         }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);

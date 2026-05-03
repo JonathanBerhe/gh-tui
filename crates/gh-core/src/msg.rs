@@ -61,6 +61,8 @@ pub enum Msg {
     },
     /// Per-file diff fetch failed.
     DiffFailed(String),
+    /// Flip the diff view between unified and split layouts.
+    ToggleDiffViewMode,
     /// Move the selection in the PR list.
     SelectionDelta(i32),
     /// Jump selection to first or last item.

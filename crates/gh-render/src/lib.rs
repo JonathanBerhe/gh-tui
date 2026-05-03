@@ -9,6 +9,6 @@ pub mod diff;
 pub mod markdown;
 pub mod syntax;
 
-pub use diff::{file_line_offsets, render as render_diff};
+pub use diff::{file_line_offsets, render as render_diff, split::render as render_diff_split};
 pub use markdown::render as render_markdown;
 pub use syntax::{detect as detect_lang, highlight, Lang};
