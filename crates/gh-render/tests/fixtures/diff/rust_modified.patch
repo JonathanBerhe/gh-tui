@@ -1,0 +1,10 @@
+@@ -1,5 +1,7 @@
+ use std::collections::HashMap;
+
+-fn count(items: &[i32]) -> usize {
+-    items.len()
++fn count(items: &[i32]) -> u32 {
++    let mut n: u32 = 0;
++    for _ in items { n += 1; }
++    n
+ }

@@ -13,6 +13,9 @@ gh-core = { path = "../gh-core" }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
 tracing = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-highlight = { workspace = true }
+tree-sitter-rust = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
