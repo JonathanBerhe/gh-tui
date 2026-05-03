@@ -1,7 +1,11 @@
-//! PR diff screen: title, summary line (file count, totals), separator,
-//! scrollable diff body via `gh_render::render_diff`.
+//! PR diff screen: title, summary line, separator, scrollable body.
+//! Body layout is either unified (single column via `gh_render::render_diff`)
+//! or split (two columns via `gh_render::render_diff_split`); the active
+//! `DiffViewMode` decides which sub-renderer runs.
 
-use gh_core::FilePatch;
+mod split;
+
+use gh_core::{DiffViewMode, FilePatch};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -10,7 +14,13 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(files: &[FilePatch], scroll: u16, frame: &mut Frame<'_>, area: Rect) {
+pub fn draw(
+    files: &[FilePatch],
+    scroll: u16,
+    view_mode: DiffViewMode,
+    frame: &mut Frame<'_>,
+    area: Rect,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -21,13 +31,16 @@ pub fn draw(files: &[FilePatch], scroll: u16, frame: &mut Frame<'_>, area: Rect)
         ])
         .split(area);
 
-    frame.render_widget(title_line(files.len()), chunks[0]);
+    frame.render_widget(title_line(files.len(), view_mode), chunks[0]);
     frame.render_widget(summary_line(files), chunks[1]);
     frame.render_widget(separator(), chunks[2]);
-    frame.render_widget(body(files, scroll), chunks[3]);
+    match view_mode {
+        DiffViewMode::Unified => frame.render_widget(unified_body(files, scroll), chunks[3]),
+        DiffViewMode::Split => split::draw(files, scroll, frame, chunks[3]),
+    }
 }
 
-fn title_line(file_count: usize) -> Paragraph<'static> {
+fn title_line(file_count: usize, view_mode: DiffViewMode) -> Paragraph<'static> {
     let label = Span::styled(
         "diff",
         Style::default()
@@ -41,7 +54,17 @@ fn title_line(file_count: usize) -> Paragraph<'static> {
         ),
         Style::default().fg(Color::DarkGray),
     );
-    Paragraph::new(Line::from(vec![label, count]))
+    let mode = Span::styled(
+        format!(
+            "  •  {}",
+            match view_mode {
+                DiffViewMode::Unified => "unified",
+                DiffViewMode::Split => "split",
+            }
+        ),
+        Style::default().fg(Color::DarkGray),
+    );
+    Paragraph::new(Line::from(vec![label, count, mode]))
 }
 
 fn summary_line(files: &[FilePatch]) -> Paragraph<'static> {
@@ -75,7 +98,7 @@ fn separator() -> Paragraph<'static> {
     )))
 }
 
-fn body(files: &[FilePatch], scroll: u16) -> Paragraph<'static> {
+fn unified_body(files: &[FilePatch], scroll: u16) -> Paragraph<'static> {
     let lines = if files.is_empty() {
         vec![Line::from(Span::styled(
             "(no changed files)",

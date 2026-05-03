@@ -149,6 +149,13 @@ impl Resolver {
             KeyCode::Char('{') => self.complete_jump_section(Direction::Prev),
             KeyCode::Char('}') => self.complete_jump_section(Direction::Next),
 
+            // Toggle split-view mode in the diff screen. `s` is unbound in
+            // the vim grammar (no operator/motion), so safe to claim.
+            KeyCode::Char('s') => {
+                self.reset();
+                Resolution::Action(Action::ToggleSplitView)
+            }
+
             // Single-key motions.
             KeyCode::Char('h') | KeyCode::Left => self.complete_motion(Motion::Left),
             KeyCode::Char('j') | KeyCode::Down => self.complete_motion(Motion::Down),
@@ -744,6 +751,19 @@ mod tests {
                 direction: Direction::Next
             })
         );
+    }
+
+    #[test]
+    fn s_emits_toggle_split_view() {
+        assert_eq!(final_action(&[ch('s')]), Action::ToggleSplitView);
+    }
+
+    #[test]
+    fn s_resets_pending_command() {
+        let mut r = Resolver::new();
+        assert_eq!(r.feed(ch('d')), Resolution::Pending);
+        assert_eq!(r.feed(ch('s')), Resolution::Action(Action::ToggleSplitView));
+        assert_eq!(r.pending_display(), "");
     }
 
     #[test]

@@ -1,0 +1,11 @@
+---
+source: crates/gh-render/tests/diff_split_snapshots.rs
+expression: flatten(&files)
+---
+src/word_pure_add.rs (modified)                              │ src/word_pure_add.rs (modified)
++2 -0                                                        │ +2 -0
+@@ -1,2 +1,4 @@                                              │ @@ -1,2 +1,4 @@
+first context line                                           │ first context line
+second context line                                          │ second context line
+  ~                                                          │ brand new line one
+  ~                                                          │ brand new line two

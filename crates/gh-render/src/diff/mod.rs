@@ -15,6 +15,7 @@
 //! Files with `patch == None` (too large / binary) render as a single dim
 //! italic placeholder. A blank line separates consecutive files.
 
+pub mod split;
 pub mod word;
 
 use gh_core::{FilePatch, PatchStatus};
@@ -177,7 +178,7 @@ fn paired_plus_line(spans: Vec<Span<'static>>) -> Line<'static> {
 /// Pull just the post-image lines (context + additions) out of a patch,
 /// stripping the leading prefix character. The result is what tree-sitter
 /// sees.
-fn reconstruct_after(patch: &str) -> String {
+pub(super) fn reconstruct_after(patch: &str) -> String {
     let mut out = String::new();
     let mut first = true;
     for raw in patch.lines() {
@@ -234,7 +235,7 @@ pub fn file_line_offsets(files: &[FilePatch]) -> Vec<u16> {
     offsets
 }
 
-fn file_header(file: &FilePatch) -> Line<'static> {
+pub(super) fn file_header(file: &FilePatch) -> Line<'static> {
     let path_text = match (&file.previous_path, file.status) {
         (Some(prev), PatchStatus::Renamed | PatchStatus::Copied) => {
             format!("{prev} → {}", file.path)
@@ -249,14 +250,14 @@ fn file_header(file: &FilePatch) -> Line<'static> {
     ))
 }
 
-fn file_stats(file: &FilePatch) -> Line<'static> {
+pub(super) fn file_stats(file: &FilePatch) -> Line<'static> {
     Line::from(Span::styled(
         format!("+{} -{}", file.additions, file.deletions),
         Style::default().fg(Color::DarkGray),
     ))
 }
 
-fn diff_omitted() -> Line<'static> {
+pub(super) fn diff_omitted() -> Line<'static> {
     Line::from(Span::styled(
         "[diff omitted: file too large or binary]",
         Style::default()
@@ -265,7 +266,7 @@ fn diff_omitted() -> Line<'static> {
     ))
 }
 
-fn hunk_header_line(raw: &str) -> Line<'static> {
+pub(super) fn hunk_header_line(raw: &str) -> Line<'static> {
     Line::from(Span::styled(
         raw.to_string(),
         Style::default().fg(Color::Blue),
@@ -279,7 +280,7 @@ fn deletion_line(raw: &str) -> Line<'static> {
     ))
 }
 
-fn no_newline_line(raw: &str) -> Line<'static> {
+pub(super) fn no_newline_line(raw: &str) -> Line<'static> {
     Line::from(Span::styled(
         raw.to_string(),
         Style::default()

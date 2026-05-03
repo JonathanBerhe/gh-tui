@@ -54,6 +54,8 @@ pub enum Action {
     Open,
     /// Open the diff sub-view from PR detail (Tab).
     OpenDiff,
+    /// Flip the diff view between unified and split layouts (`s`).
+    ToggleSplitView,
     /// Pop one screen off the nav stack (Backspace from a sub-screen).
     Back,
     /// Jump to the next/previous "section" within the current screen
