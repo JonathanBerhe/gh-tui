@@ -27,19 +27,21 @@ pub fn draw(
         .constraints([
             Constraint::Length(1), // title
             Constraint::Length(1), // summary
+            Constraint::Length(1), // blank — visual breath above the rule
             Constraint::Length(1), // separator
+            Constraint::Length(1), // blank — visual breath below the rule
             Constraint::Min(1),    // body
         ])
         .split(area);
 
     frame.render_widget(title_line(files.len(), threads.len(), view_mode), chunks[0]);
     frame.render_widget(summary_line(files), chunks[1]);
-    frame.render_widget(separator(), chunks[2]);
+    frame.render_widget(separator(), chunks[3]);
     match view_mode {
         DiffViewMode::Unified => {
-            frame.render_widget(unified_body(files, threads, scroll), chunks[3]);
+            frame.render_widget(unified_body(files, threads, scroll), chunks[5]);
         }
-        DiffViewMode::Split => split::draw(files, threads, scroll, frame, chunks[3]),
+        DiffViewMode::Split => split::draw(files, threads, scroll, frame, chunks[5]),
     }
 }
 

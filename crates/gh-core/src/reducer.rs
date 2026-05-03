@@ -120,31 +120,51 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             };
         }
         Msg::OpenSelectedPr => {
-            // Only meaningful from the PR list. Snapshot the current screen
-            // onto the nav stack and transition to LoadingDetail.
-            if let Screen::PrList {
-                repo,
-                items,
-                selected,
-                ..
-            } = &state.screen
-            {
-                if let Some(pr) = items.get(*selected) {
-                    let number = pr.number;
+            // The "primary forward action" for the active screen — fired by
+            // Enter and `l`. From the PR list it opens the highlighted PR;
+            // from PR detail it opens the diff (a faster `Tab`); from the
+            // diff view it's a no-op.
+            match &state.screen {
+                Screen::PrList {
+                    repo,
+                    items,
+                    selected,
+                    ..
+                } => {
+                    if let Some(pr) = items.get(*selected) {
+                        let number = pr.number;
+                        let repo_ref = repo.clone();
+                        let prior = std::mem::replace(
+                            &mut state.screen,
+                            Screen::LoadingDetail {
+                                repo: repo_ref.clone(),
+                                number,
+                            },
+                        );
+                        state.nav_stack.push(prior);
+                        cmds.push(Cmd::FetchPrDetail {
+                            repo: repo_ref,
+                            number,
+                        });
+                    }
+                }
+                Screen::PrDetail { repo, detail, .. } => {
+                    let number = detail.number;
                     let repo_ref = repo.clone();
                     let prior = std::mem::replace(
                         &mut state.screen,
-                        Screen::LoadingDetail {
+                        Screen::LoadingDiff {
                             repo: repo_ref.clone(),
                             number,
                         },
                     );
                     state.nav_stack.push(prior);
-                    cmds.push(Cmd::FetchPrDetail {
+                    cmds.push(Cmd::FetchPrDiff {
                         repo: repo_ref,
                         number,
                     });
                 }
+                _ => {}
             }
         }
         Msg::PrDetailReady { detail, body_lines } => {
@@ -852,6 +872,18 @@ mod tests {
         let (s2, cmds) = reduce(s, Msg::OpenSelectedPr);
         assert!(matches!(s2.screen, Screen::PrList { .. }));
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn open_selected_pr_in_pr_detail_opens_diff() {
+        // `l` (and Enter) from PR detail acts as the screen's primary
+        // forward — same effect as Tab.
+        let (s2, cmds) = reduce(pr_detail_state(7), Msg::OpenSelectedPr);
+        assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+        assert_eq!(s2.nav_stack.len(), 1);
+        assert!(matches!(s2.nav_stack[0], Screen::PrDetail { .. }));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Cmd::FetchPrDiff { number: 7, .. }));
     }
 
     #[test]

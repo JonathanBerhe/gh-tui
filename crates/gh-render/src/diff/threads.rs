@@ -58,8 +58,12 @@ pub(super) fn pseudo_line_count(thread: &ReviewThread) -> usize {
 // ── shared anchor walker ───────────────────────────────────────────────────
 
 /// `(path, new_file_line, row_index_after_emit)` for every context/`+` row
-/// in the rendered output. Walks the same line-emission rules as
-/// `render_file` and `split::render_file` so the indices match.
+/// in the rendered output.
+///
+/// Mirrors `ChangeBlockWalker`'s buffer-and-flush behaviour exactly so
+/// anchor indices line up with the rendered output, including the
+/// **interleaved** emission used for balanced multi-pair `-`/`+` blocks
+/// (the walker emits `-a, +A, -b, +B`, not `-a, -b, +A, +B`).
 fn collect_anchors(files: &[FilePatch]) -> Vec<(String, u32, usize)> {
     let mut anchors = Vec::new();
     let mut idx: usize = 0;
@@ -76,8 +80,20 @@ fn collect_anchors(files: &[FilePatch]) -> Vec<(String, u32, usize)> {
             }
         };
         let mut new_line: u32 = 0;
+        // Pending counters mirror ChangeBlockWalker's buffered state.
+        let mut pending_minus: usize = 0;
+        // The new-file line number assigned to each buffered `+`.
+        let mut pending_plus: Vec<u32> = Vec::new();
+
         for raw in patch.lines() {
             if raw.starts_with("@@") {
+                flush_anchors(
+                    &file.path,
+                    &mut idx,
+                    &mut pending_minus,
+                    &mut pending_plus,
+                    &mut anchors,
+                );
                 if let Some(start) = parse_hunk_new_start(raw) {
                     new_line = start;
                 }
@@ -86,24 +102,87 @@ fn collect_anchors(files: &[FilePatch]) -> Vec<(String, u32, usize)> {
             }
             match raw.chars().next() {
                 Some('+') => {
-                    anchors.push((file.path.clone(), new_line, idx));
+                    pending_plus.push(new_line);
                     new_line = new_line.saturating_add(1);
-                    idx += 1;
                 }
-                Some('-') | Some('\\') => {
+                Some('-') => {
+                    // `-` after `+` ends the change block — flush first.
+                    if !pending_plus.is_empty() {
+                        flush_anchors(
+                            &file.path,
+                            &mut idx,
+                            &mut pending_minus,
+                            &mut pending_plus,
+                            &mut anchors,
+                        );
+                    }
+                    pending_minus += 1;
+                }
+                Some('\\') => {
+                    flush_anchors(
+                        &file.path,
+                        &mut idx,
+                        &mut pending_minus,
+                        &mut pending_plus,
+                        &mut anchors,
+                    );
                     idx += 1;
                 }
                 _ => {
-                    // Context or truly blank — present in both pre- and
-                    // post-image; counts as a new-file row.
+                    flush_anchors(
+                        &file.path,
+                        &mut idx,
+                        &mut pending_minus,
+                        &mut pending_plus,
+                        &mut anchors,
+                    );
                     anchors.push((file.path.clone(), new_line, idx));
                     new_line = new_line.saturating_add(1);
                     idx += 1;
                 }
             }
         }
+        flush_anchors(
+            &file.path,
+            &mut idx,
+            &mut pending_minus,
+            &mut pending_plus,
+            &mut anchors,
+        );
     }
     anchors
+}
+
+/// Mirror of [`super::ChangeBlockWalker::flush`]. Walks the buffered
+/// `-`/`+` runs in the same order the renderer emits them (interleaved
+/// for balanced blocks; stacked for unbalanced) and pushes anchors at
+/// the right post-emit indices.
+fn flush_anchors(
+    path: &str,
+    idx: &mut usize,
+    pending_minus: &mut usize,
+    pending_plus: &mut Vec<u32>,
+    anchors: &mut Vec<(String, u32, usize)>,
+) {
+    let m = *pending_minus;
+    let p = pending_plus.len();
+    if m > 0 && m == p {
+        // Balanced — interleaved (`-, +, -, +, ...`).
+        for &line in pending_plus.iter() {
+            *idx += 1; // `-` row
+            anchors.push((path.to_string(), line, *idx));
+            *idx += 1; // `+` row at this index
+        }
+    } else {
+        // Unbalanced or one-sided — minuses first, then plusses.
+        *idx += m;
+        for &line in pending_plus.iter() {
+            anchors.push((path.to_string(), line, *idx));
+            *idx += 1;
+        }
+    }
+    *pending_minus = 0;
+    pending_plus.clear();
 }
 
 fn parse_hunk_new_start(line: &str) -> Option<u32> {
@@ -153,7 +232,18 @@ fn apply_inserts<T, F>(
     for (orig_at, rows) in inserts {
         let count = rows.len();
         for (off, row) in rows.into_iter().enumerate() {
-            out.insert(orig_at + shift + off, row);
+            // Defensive clamp: in the (debug-asserted) absence of bugs the
+            // walker-mirroring `collect_anchors` always yields valid indices,
+            // but a future change to the renderer must not crash the binary.
+            let target = orig_at.saturating_add(shift).saturating_add(off);
+            let safe = target.min(out.len());
+            debug_assert_eq!(
+                target,
+                safe,
+                "thread anchor {target} > rendered output length {} — bug in collect_anchors",
+                out.len(),
+            );
+            out.insert(safe, row);
         }
         shift += count;
     }
@@ -292,5 +382,87 @@ mod tests {
         assert_eq!(anchors.len(), 2);
         assert_eq!(anchors[0], ("a.rs".to_string(), 1, 3));
         assert_eq!(anchors[1], ("a.rs".to_string(), 2, 4));
+    }
+
+    #[test]
+    fn collect_anchors_balanced_multi_pair_uses_interleaved_indices() {
+        // 2-2 balanced block. `super::ChangeBlockWalker` emits
+        //   -a, +A, -b, +B  (interleaved)
+        // not patch order
+        //   -a, -b, +A, +B  (stacked)
+        // So the anchor for `+A` (new line 1) must point at idx 4 and
+        // the anchor for `+B` (new line 2) at idx 6.
+        let files = vec![fp("a.rs", "@@ -1,2 +1,2 @@\n-a\n-b\n+A\n+B")];
+        let anchors = collect_anchors(&files);
+        // Indices:
+        //   0: header, 1: stats, 2: @@,
+        //   3: -a, 4: +A, 5: -b, 6: +B
+        assert_eq!(anchors.len(), 2);
+        assert_eq!(anchors[0], ("a.rs".to_string(), 1, 4));
+        assert_eq!(anchors[1], ("a.rs".to_string(), 2, 6));
+    }
+
+    #[test]
+    fn collect_anchors_unbalanced_block_keeps_stacked_indices() {
+        // 2 - + 1 + is unbalanced → walker emits stacked:
+        //   -a, -b, +C
+        let files = vec![fp("a.rs", "@@ -1,2 +1,1 @@\n-a\n-b\n+C")];
+        let anchors = collect_anchors(&files);
+        // 0: header, 1: stats, 2: @@, 3: -a, 4: -b, 5: +C
+        assert_eq!(anchors, vec![("a.rs".to_string(), 1, 5)]);
+    }
+
+    #[test]
+    fn collect_anchors_match_render_output_for_balanced_multi_pair() {
+        // End-to-end check: the index recorded for `+A` must point at
+        // the rendered `+A` line in the actual `render` output.
+        let patch = "@@ -1,2 +1,2 @@\n-a\n-b\n+A\n+B";
+        let files = vec![fp("a.rs", patch)];
+        let lines = super::super::render(&files, &[]);
+        let anchors = collect_anchors(&files);
+        for (path, line_no, idx) in anchors {
+            // Round-trip: the rendered line at idx should contain content
+            // that matches the post-image line. For our test patch:
+            //   line 1 → "A", line 2 → "B"
+            let rendered: String = lines[idx]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let expected = match line_no {
+                1 => "A",
+                2 => "B",
+                _ => panic!("unexpected anchor line_no {line_no}"),
+            };
+            assert!(
+                rendered.contains(expected),
+                "anchor for {path}:{line_no} (idx {idx}) should point at {expected:?}; got {rendered:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn render_with_thread_on_balanced_multi_pair_does_not_panic() {
+        // This was the user-reported smoke-test panic: a thread anchored
+        // to a non-final `+` in a balanced multi-pair block crashed
+        // `out.insert` with an out-of-bounds index because the old
+        // `collect_anchors` walked patch order, not interleaved order.
+        use chrono::Utc;
+        let patch = "@@ -1,2 +1,2 @@\n-a\n-b\n+A\n+B";
+        let files = vec![fp("src/foo.rs", patch)];
+        let threads = vec![ReviewThread {
+            path: "src/foo.rs".into(),
+            line: Some(1), // anchored to +A, the first plus of the pair
+            original_line: Some(1),
+            comments: vec![ReviewComment {
+                author: "alice".into(),
+                body: "comment on +A".into(),
+                created_at: Utc::now(),
+            }],
+        }];
+        // Should NOT panic. Should inject 1 pseudo-line after the +A row.
+        let lines = super::super::render(&files, &threads);
+        // 4 base patch rows + header + stats + @@ + 1 pseudo = 8
+        assert_eq!(lines.len(), 8);
     }
 }

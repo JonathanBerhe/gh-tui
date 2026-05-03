@@ -30,8 +30,10 @@ impl Mode {
 /// the left and post-image on the right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffViewMode {
-    #[default]
     Unified,
+    /// Default: pre-image left, post-image right. `s` toggles back to
+    /// unified.
+    #[default]
     Split,
 }
 
