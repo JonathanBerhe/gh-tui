@@ -45,14 +45,17 @@ fn title_line(file_count: usize) -> Paragraph<'static> {
 }
 
 fn summary_line(files: &[FilePatch]) -> Paragraph<'static> {
-    let (adds, dels) = files
-        .iter()
-        .fold((0u32, 0u32), |(a, d), f| (a + f.additions, d + f.deletions));
+    let (adds, dels, omitted) = files.iter().fold((0u32, 0u32, 0usize), |(a, d, o), f| {
+        (
+            a.saturating_add(f.additions),
+            d.saturating_add(f.deletions),
+            o + usize::from(f.patch.is_none()),
+        )
+    });
     let stats = Span::styled(
         format!("+{adds} -{dels}"),
         Style::default().fg(Color::DarkGray),
     );
-    let omitted = files.iter().filter(|f| f.patch.is_none()).count();
     let mut spans = vec![stats];
     if omitted > 0 {
         spans.push(Span::styled(

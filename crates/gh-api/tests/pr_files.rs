@@ -8,7 +8,7 @@ use gh_api::{Client, EtagCache, PrFilesError};
 use gh_core::{PatchStatus, RepoRef};
 use serde_json::json;
 use wiremock::{
-    matchers::{method, path_regex},
+    matchers::{method, path_regex, query_param},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -113,6 +113,51 @@ async fn missing_patch_field_yields_none() {
         .await
         .unwrap();
     assert_eq!(files[0].patch, None);
+}
+
+#[tokio::test]
+async fn paginated_response_concatenates_all_pages() {
+    let server = MockServer::start().await;
+    let cache = Arc::new(EtagCache::in_memory());
+    let client = Client::new("fake-token", &server.uri(), cache).unwrap();
+
+    // Page 1: one file, advertise next page via Link header.
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/repos/foo/bar/pulls/3/files$"))
+        .and(query_param("page", "1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "link",
+                    r#"<https://api.github.com/repos/foo/bar/pulls/3/files?page=2>; rel="next""#,
+                )
+                .set_body_json(json!([
+                    {"sha":"a","filename":"a.rs","status":"modified","additions":1,"deletions":0,"changes":1}
+                ])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Page 2: one file, no Link header → loop terminates.
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/repos/foo/bar/pulls/3/files$"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"sha":"b","filename":"b.rs","status":"modified","additions":1,"deletions":0,"changes":1}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let files = gh_api::fetch_pr_files(&client, &RepoRef::parse("foo/bar").unwrap(), 3)
+        .await
+        .unwrap();
+    server.verify().await;
+
+    assert_eq!(files.len(), 2, "both pages concatenated");
+    assert_eq!(files[0].path, "a.rs");
+    assert_eq!(files[1].path, "b.rs");
 }
 
 #[tokio::test]
