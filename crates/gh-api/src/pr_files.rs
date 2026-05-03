@@ -9,9 +9,17 @@
 use gh_core::{FilePatch, PatchStatus, RepoRef};
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use crate::client::{ApiError, Client};
+
+/// Per-request page size. GitHub allows up to 100; smaller values would just
+/// mean more round-trips on PRs with many files.
+const PER_PAGE: u32 = 100;
+/// Hard cap on the number of file pages we will fetch for a single PR.
+/// 10 × 100 = 1000 files; PRs larger than this are pathological and we'd
+/// rather render a truncated view than block the UI on minute-long fetches.
+const MAX_PAGES: u32 = 10;
 
 #[derive(Debug, Error)]
 pub enum PrFilesError {
@@ -21,30 +29,49 @@ pub enum PrFilesError {
     Api(#[from] ApiError),
 }
 
-/// Fetch the per-file diff for a single PR. GitHub paginates this endpoint at
-/// 30 files/page; for now we fetch the first page only — enough for the vast
-/// majority of PRs. Multi-page support lands when dogfooding shows we need it.
+/// Fetch the per-file diff for a single PR. Loops over pages of `PER_PAGE`
+/// files (GitHub's max) until `Link: rel="next"` is absent, capped at
+/// `MAX_PAGES` to bound worst-case work. PRs that exceed the cap render a
+/// truncated view and emit a `tracing::warn!`.
 #[instrument(skip(client))]
 pub async fn fetch_pr_files(
     client: &Client,
     repo: &RepoRef,
     number: u64,
 ) -> Result<Vec<FilePatch>, PrFilesError> {
-    let path = format!(
-        "/repos/{}/{}/pulls/{number}/files?per_page=100",
-        repo.owner, repo.name
-    );
+    let mut all: Vec<FilePatch> = Vec::new();
+    for page_n in 1..=MAX_PAGES {
+        let path = format!(
+            "/repos/{}/{}/pulls/{number}/files?per_page={PER_PAGE}&page={page_n}",
+            repo.owner, repo.name
+        );
+        let page = client
+            .get_json::<Vec<RawPrFile>>(&path)
+            .await
+            .map_err(|e| match e {
+                ApiError::NotFound => PrFilesError::NotFound(number),
+                other => PrFilesError::Api(other),
+            })?;
 
-    let page = client
-        .get_json::<Vec<RawPrFile>>(&path)
-        .await
-        .map_err(|e| match e {
-            ApiError::NotFound => PrFilesError::NotFound(number),
-            other => PrFilesError::Api(other),
-        })?;
+        let count = page.body.len();
+        all.extend(page.body.into_iter().map(into_file_patch));
+        debug!(page = page_n, count, total = all.len(), %number, "got pr files page");
 
-    debug!(count = page.body.len(), %number, "got pr files");
-    Ok(page.body.into_iter().map(into_file_patch).collect())
+        if !page.has_next {
+            return Ok(all);
+        }
+        if page_n == MAX_PAGES {
+            warn!(
+                cap = MAX_PAGES,
+                so_far = all.len(),
+                %number,
+                "PR has more than {} pages of files; truncating diff",
+                MAX_PAGES
+            );
+            return Ok(all);
+        }
+    }
+    Ok(all)
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,14 +104,19 @@ fn into_file_patch(raw: RawPrFile) -> FilePatch {
 fn parse_status(s: &str) -> PatchStatus {
     match s {
         "added" => PatchStatus::Added,
+        "modified" => PatchStatus::Modified,
         "removed" => PatchStatus::Removed,
         "renamed" => PatchStatus::Renamed,
         "copied" => PatchStatus::Copied,
         "changed" => PatchStatus::Changed,
         "unchanged" => PatchStatus::Unchanged,
         // GitHub's docs list the seven values above. Any other string is
-        // forward-compat — treat as Modified.
-        _ => PatchStatus::Modified,
+        // forward-compat — log the surprise and treat as Modified so the
+        // UI still renders. Useful signal if GitHub ever extends the enum.
+        other => {
+            warn!(value = %other, "unknown PullRequestFile.status; treating as modified");
+            PatchStatus::Modified
+        }
     }
 }
 

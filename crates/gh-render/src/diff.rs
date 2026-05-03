@@ -24,29 +24,13 @@ use ratatui::{
 /// Render a sequence of file patches into displayable lines.
 #[must_use]
 pub fn render(files: &[FilePatch]) -> Vec<Line<'static>> {
-    render_with_offsets(files).0
-}
-
-/// Pre-computed line offsets pointing at each file's header. Used by the
-/// reducer to serve `{`/`}` jumps between files.
-#[must_use]
-pub fn file_line_offsets(files: &[FilePatch]) -> Vec<u16> {
-    render_with_offsets(files).1
-}
-
-fn render_with_offsets(files: &[FilePatch]) -> (Vec<Line<'static>>, Vec<u16>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut offsets: Vec<u16> = Vec::with_capacity(files.len());
-
     for (i, file) in files.iter().enumerate() {
         if i > 0 {
             lines.push(Line::raw(""));
         }
-        offsets.push(u16::try_from(lines.len()).unwrap_or(u16::MAX));
-
         lines.push(file_header(file));
         lines.push(file_stats(file));
-
         match &file.patch {
             Some(patch) if !patch.is_empty() => {
                 for raw in patch.lines() {
@@ -56,8 +40,40 @@ fn render_with_offsets(files: &[FilePatch]) -> (Vec<Line<'static>>, Vec<u16>) {
             _ => lines.push(diff_omitted()),
         }
     }
+    lines
+}
 
-    (lines, offsets)
+/// Cumulative line offsets pointing at each file's header in the rendered
+/// output. Used by the reducer to serve `{`/`}` jumps between files.
+///
+/// Cheap: walks `patch.lines()` once per file to count, never allocates a
+/// `Line` or `Span`. Workers call this on the message-passing path so the
+/// hot render path runs only inside the UI loop.
+///
+/// Saturates at `u16::MAX`; jumps in diffs longer than 65535 lines will land
+/// at the final saturated offset rather than the file's true position.
+#[must_use]
+pub fn file_line_offsets(files: &[FilePatch]) -> Vec<u16> {
+    let mut offsets: Vec<u16> = Vec::with_capacity(files.len());
+    let mut total: u32 = 0;
+    for (i, file) in files.iter().enumerate() {
+        if i > 0 {
+            // Inter-file blank separator.
+            total = total.saturating_add(1);
+        }
+        offsets.push(u16::try_from(total).unwrap_or(u16::MAX));
+        // Header + stats lines.
+        total = total.saturating_add(2);
+        // Patch body — `lines()` count, or 1 for the placeholder.
+        let body_lines = match &file.patch {
+            Some(patch) if !patch.is_empty() => {
+                u32::try_from(patch.lines().count()).unwrap_or(u32::MAX)
+            }
+            _ => 1,
+        };
+        total = total.saturating_add(body_lines);
+    }
+    offsets
 }
 
 fn file_header(file: &FilePatch) -> Line<'static> {
@@ -174,5 +190,32 @@ mod tests {
         // first file: header(1) + stats(1) + @@(1) + +x(1) = 4 lines, then
         // the inter-file blank brings us to 5, second file's header at 5.
         assert_eq!(offsets[1], 5);
+    }
+
+    /// Cheap `file_line_offsets` must agree with the full `render` walk —
+    /// when offsets[i] points at line N, the rendered output's line N must
+    /// be the matching file's header.
+    #[test]
+    fn cheap_offsets_match_full_render() {
+        let files = vec![
+            fp(
+                "a.rs",
+                Some("@@ -1,2 +1,2 @@\n one\n+two"),
+                PatchStatus::Modified,
+            ),
+            fp("b.rs", None, PatchStatus::Modified),
+            fp("c.rs", Some("@@ -1 +1 @@\n+x"), PatchStatus::Added),
+        ];
+        let lines = render(&files);
+        let offsets = file_line_offsets(&files);
+        for (i, file) in files.iter().enumerate() {
+            let idx = usize::from(offsets[i]);
+            let header_text = &lines[idx].spans[0].content;
+            assert!(
+                header_text.contains(&file.path),
+                "offset[{i}] = {idx} should point at {} header, got {header_text:?}",
+                file.path,
+            );
+        }
     }
 }

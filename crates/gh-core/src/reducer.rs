@@ -320,7 +320,18 @@ fn compute_review_offsets(body_lines: u16, n_reviews: usize) -> Vec<u16> {
 }
 
 /// Pick the next/prev section's scroll position relative to the current one.
+///
 /// Used by both `PrDetail` (review entries) and `DiffView` (file headers).
+///
+/// Contract:
+/// - `offsets` must be sorted ascending and non-empty (caller guards on
+///   `is_empty()`; the `debug_assert!` enforces the invariant in tests).
+/// - Each entry is the line offset where a section *starts*.
+/// - `current` may lie outside any offset (e.g. mid-section); `Next` jumps
+///   to the first offset strictly greater than `current`, `Prev` to the
+///   last strictly less.
+/// - `count` defaults to 1; `Next` with `count = N` advances `N-1` further;
+///   `Prev` retreats `N-1` further. Both saturate at the ends of the slice.
 fn next_section_scroll(
     current: u16,
     offsets: &[u16],
