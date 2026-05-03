@@ -12,13 +12,19 @@ description = "Pure rendering helpers for gh-tui: markdown, diff, syntax, images
 gh-core = { path = "../gh-core" }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
+similar = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-highlight = { workspace = true }
 tree-sitter-rust = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 insta = { workspace = true }
+
+[[bench]]
+name = "diff"
+harness = false
 
 [lints]
 workspace = true

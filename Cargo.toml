@@ -58,6 +58,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 tree-sitter = "0.25"
 tree-sitter-highlight = "0.25"
 tree-sitter-rust = "0.24"
+similar = "2.6"
 
 # Paths
 directories = "6"
@@ -66,6 +67,7 @@ directories = "6"
 pretty_assertions = "1.4"
 insta = { version = "1.40", features = ["yaml"] }
 wiremock = "0.6"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

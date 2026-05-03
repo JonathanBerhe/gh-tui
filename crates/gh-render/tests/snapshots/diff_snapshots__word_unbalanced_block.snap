@@ -1,0 +1,12 @@
+---
+source: crates/gh-render/tests/diff_snapshots.rs
+expression: "flatten(&one_file_at(\"word_unbalanced_block\", \"src/word_unbalanced.rs\",\nPatchStatus::Modified, 1, 3,))"
+---
+src/word_unbalanced.rs (modified)
++1 -3
+@@ -1,4 +1,2 @@
+-line one
+-line two
+-line three
++single new line
+ trailing context
