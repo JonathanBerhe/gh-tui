@@ -18,8 +18,8 @@ pub use auth::AuthState;
 pub use cmd::Cmd;
 pub use msg::{JumpDirection, Msg, SelectionJump};
 pub use pulls::{
-    ChecksState, ChecksSummary, Mergeable, ParseRepoRefError, PrDetail, PrState, PrSummary,
-    RepoRef, ReviewDecision, ReviewState, ReviewSummary,
+    ChecksState, ChecksSummary, FilePatch, Mergeable, ParseRepoRefError, PatchStatus, PrDetail,
+    PrState, PrSummary, RepoRef, ReviewDecision, ReviewState, ReviewSummary,
 };
 pub use rate_limit::{RateLimit, Tier};
 pub use reducer::{initial_commands, reduce};

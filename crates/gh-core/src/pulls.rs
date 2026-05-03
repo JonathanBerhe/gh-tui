@@ -203,6 +203,49 @@ pub struct PrDetail {
     pub checks: ChecksSummary,
 }
 
+/// One changed file in a pull request, as returned by `GET /pulls/{n}/files`.
+/// `patch` is the raw unified-diff text (already computed by GitHub); it is
+/// `None` when the file is too large or binary, in which case the renderer
+/// substitutes a placeholder line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePatch {
+    pub path: String,
+    /// Set on renames/copies; the original path of the file.
+    pub previous_path: Option<String>,
+    pub status: PatchStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    pub patch: Option<String>,
+    pub blob_sha: String,
+}
+
+/// File-level change kind, mirroring GitHub's `PullRequestFile.status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatchStatus {
+    Added,
+    Modified,
+    Removed,
+    Renamed,
+    Copied,
+    Changed,
+    Unchanged,
+}
+
+impl PatchStatus {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Modified => "modified",
+            Self::Removed => "removed",
+            Self::Renamed => "renamed",
+            Self::Copied => "copied",
+            Self::Changed => "changed",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

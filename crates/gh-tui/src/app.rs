@@ -120,8 +120,9 @@ fn action_to_msg(action: Action) -> Option<Msg> {
     match action {
         Action::Quit => Some(Msg::Quit),
         Action::Open => Some(Msg::OpenSelectedPr),
+        Action::OpenDiff => Some(Msg::OpenDiff),
         Action::Back => Some(Msg::Back),
-        Action::JumpSection { count, direction } => Some(Msg::ReviewJump {
+        Action::JumpSection { count, direction } => Some(Msg::SectionJump {
             count,
             direction: match direction {
                 Direction::Next => JumpDirection::Next,

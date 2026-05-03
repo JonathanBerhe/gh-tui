@@ -172,6 +172,58 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 };
             }
         }
+        Msg::OpenDiff => {
+            // Only meaningful from PR detail. Snapshot the current screen
+            // onto the nav stack and transition to LoadingDiff.
+            if let Screen::PrDetail { repo, detail, .. } = &state.screen {
+                let number = detail.number;
+                let repo_ref = repo.clone();
+                let prior = std::mem::replace(
+                    &mut state.screen,
+                    Screen::LoadingDiff {
+                        repo: repo_ref.clone(),
+                        number,
+                    },
+                );
+                state.nav_stack.push(prior);
+                cmds.push(Cmd::FetchPrDiff {
+                    repo: repo_ref,
+                    number,
+                });
+            }
+        }
+        Msg::DiffReady {
+            repo,
+            number,
+            files,
+            file_offsets,
+        } => {
+            // Only consume when we're still waiting for THIS diff. Stale
+            // responses (number mismatch or screen changed) drop silently.
+            if let Screen::LoadingDiff {
+                repo: cur_repo,
+                number: cur_n,
+            } = &state.screen
+            {
+                if *cur_repo == repo && *cur_n == number {
+                    state.screen = Screen::DiffView {
+                        repo,
+                        number,
+                        files,
+                        scroll: 0,
+                        file_offsets,
+                    };
+                }
+            }
+        }
+        Msg::DiffFailed(reason) => {
+            if matches!(state.screen, Screen::LoadingDiff { .. }) {
+                state.screen = Screen::Error {
+                    message: format!("PR diff failed: {reason}"),
+                    hint: None,
+                };
+            }
+        }
         Msg::Back => {
             state.screen = state.nav_stack.pop().unwrap_or(Screen::Welcome);
         }
@@ -201,13 +253,14 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     }
                 }
             }
-            Screen::PrDetail { scroll, .. } => {
+            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
                 let new = i32::from(*scroll).saturating_add(delta);
                 *scroll = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
             }
             Screen::Welcome
             | Screen::Loading { .. }
             | Screen::LoadingDetail { .. }
+            | Screen::LoadingDiff { .. }
             | Screen::Error { .. } => {}
         },
         Msg::SelectionJump(jump) => match &mut state.screen {
@@ -219,7 +272,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     SelectionJump::Last => items.len() - 1,
                 };
             }
-            Screen::PrDetail { scroll, .. } => {
+            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
                 *scroll = match jump {
                     SelectionJump::First => 0,
                     SelectionJump::Last => u16::MAX,
@@ -227,18 +280,23 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             }
             _ => {}
         },
-        Msg::ReviewJump { count, direction } => {
-            if let Screen::PrDetail {
+        Msg::SectionJump { count, direction } => match &mut state.screen {
+            Screen::PrDetail {
                 scroll,
                 review_offsets,
                 ..
-            } = &mut state.screen
-            {
-                if !review_offsets.is_empty() {
-                    *scroll = next_review_scroll(*scroll, review_offsets, count, direction);
-                }
+            } if !review_offsets.is_empty() => {
+                *scroll = next_section_scroll(*scroll, review_offsets, count, direction);
             }
-        }
+            Screen::DiffView {
+                scroll,
+                file_offsets,
+                ..
+            } if !file_offsets.is_empty() => {
+                *scroll = next_section_scroll(*scroll, file_offsets, count, direction);
+            }
+            _ => {}
+        },
         Msg::RateLimitUpdate(rl) => {
             state.rate_limit = Some(rl);
         }
@@ -261,8 +319,9 @@ fn compute_review_offsets(body_lines: u16, n_reviews: usize) -> Vec<u16> {
         .collect()
 }
 
-/// Pick the next/prev review's scroll position relative to the current one.
-fn next_review_scroll(
+/// Pick the next/prev section's scroll position relative to the current one.
+/// Used by both `PrDetail` (review entries) and `DiffView` (file headers).
+fn next_section_scroll(
     current: u16,
     offsets: &[u16],
     count: usize,
@@ -992,7 +1051,7 @@ mod tests {
         let s = detail_with_reviews(3);
         let (s2, _) = reduce(
             s,
-            Msg::ReviewJump {
+            Msg::SectionJump {
                 count: 1,
                 direction: JumpDirection::Next,
             },
@@ -1013,7 +1072,7 @@ mod tests {
         let s = detail_with_reviews(5);
         let (s2, _) = reduce(
             s,
-            Msg::ReviewJump {
+            Msg::SectionJump {
                 count: 3,
                 direction: JumpDirection::Next,
             },
@@ -1042,7 +1101,7 @@ mod tests {
         }
         let (s2, _) = reduce(
             s,
-            Msg::ReviewJump {
+            Msg::SectionJump {
                 count: 1,
                 direction: JumpDirection::Next,
             },
@@ -1071,7 +1130,7 @@ mod tests {
         }
         let (s2, _) = reduce(
             s,
-            Msg::ReviewJump {
+            Msg::SectionJump {
                 count: 1,
                 direction: JumpDirection::Prev,
             },
@@ -1092,7 +1151,7 @@ mod tests {
         let s = detail_with_reviews(0);
         let (s2, _) = reduce(
             s,
-            Msg::ReviewJump {
+            Msg::SectionJump {
                 count: 1,
                 direction: JumpDirection::Next,
             },
@@ -1151,5 +1210,235 @@ mod tests {
         let (s, _) = reduce(State::default(), Msg::RateLimitUpdate(rl1));
         let (s, _) = reduce(s, Msg::RateLimitUpdate(rl2));
         assert_eq!(s.rate_limit, Some(rl2));
+    }
+
+    // ── Phase 5: PR diff view ──────────────────────────────────────────
+
+    fn pr_detail_state(number: u64) -> State {
+        State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(number),
+                scroll: 0,
+                review_offsets: Vec::new(),
+            },
+            ..State::default()
+        }
+    }
+
+    fn file_patch(path: &str) -> crate::pulls::FilePatch {
+        crate::pulls::FilePatch {
+            path: path.into(),
+            previous_path: None,
+            status: crate::pulls::PatchStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -1 +1 @@\n-old\n+new".into()),
+            blob_sha: "deadbeef".into(),
+        }
+    }
+
+    #[test]
+    fn open_diff_in_pr_detail_pushes_nav_and_emits_fetch() {
+        let (s2, cmds) = reduce(pr_detail_state(7), Msg::OpenDiff);
+        assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+        assert_eq!(s2.nav_stack.len(), 1, "prior PrDetail should be on stack");
+        assert!(matches!(s2.nav_stack[0], Screen::PrDetail { .. }));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Cmd::FetchPrDiff { number: 7, .. }));
+    }
+
+    #[test]
+    fn open_diff_outside_pr_detail_is_noop() {
+        let (s, cmds) = reduce(State::default(), Msg::OpenDiff);
+        assert!(matches!(s.screen, Screen::Welcome));
+        assert!(cmds.is_empty());
+        assert!(s.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn diff_ready_transitions_to_diff_view() {
+        let s = State {
+            screen: Screen::LoadingDiff {
+                repo: repo(),
+                number: 7,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs"), file_patch("b.rs")],
+                file_offsets: vec![0, 12],
+            },
+        );
+        let Screen::DiffView {
+            files,
+            scroll,
+            file_offsets,
+            ..
+        } = s2.screen
+        else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(files.len(), 2);
+        assert_eq!(scroll, 0);
+        assert_eq!(file_offsets, vec![0, 12]);
+    }
+
+    #[test]
+    fn diff_ready_for_stale_number_is_dropped() {
+        let s = State {
+            screen: Screen::LoadingDiff {
+                repo: repo(),
+                number: 7,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 99,
+                files: vec![file_patch("x.rs")],
+                file_offsets: vec![0],
+            },
+        );
+        assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+    }
+
+    #[test]
+    fn diff_failed_transitions_to_error_keeping_nav_stack() {
+        let prior = Screen::PrDetail {
+            repo: repo(),
+            detail: pr_detail(7),
+            scroll: 0,
+            review_offsets: Vec::new(),
+        };
+        let s = State {
+            screen: Screen::LoadingDiff {
+                repo: repo(),
+                number: 7,
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::DiffFailed("rate limited".into()));
+        assert!(matches!(s2.screen, Screen::Error { .. }));
+        assert_eq!(s2.nav_stack.len(), 1, "stack survives so Back recovers");
+    }
+
+    #[test]
+    fn back_from_diff_view_pops_to_pr_detail() {
+        let prior = Screen::PrDetail {
+            repo: repo(),
+            detail: pr_detail(7),
+            scroll: 0,
+            review_offsets: Vec::new(),
+        };
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs")],
+                scroll: 5,
+                file_offsets: vec![0],
+            },
+            nav_stack: vec![prior],
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::Back);
+        assert!(matches!(s2.screen, Screen::PrDetail { .. }));
+        assert!(s2.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn selection_delta_in_diff_view_scrolls() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs")],
+                scroll: 5,
+                file_offsets: vec![0],
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(3));
+        let Screen::DiffView { scroll, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(scroll, 8);
+    }
+
+    #[test]
+    fn selection_delta_in_diff_view_at_zero_does_not_underflow() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs")],
+                scroll: 0,
+                file_offsets: vec![0],
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(-5));
+        let Screen::DiffView { scroll, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(scroll, 0);
+    }
+
+    #[test]
+    fn section_jump_next_in_diff_view_advances_to_next_file() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
+                scroll: 0,
+                file_offsets: vec![0, 10, 20],
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::SectionJump {
+                count: 1,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::DiffView { scroll, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(scroll, 10);
+    }
+
+    #[test]
+    fn section_jump_with_no_files_is_noop() {
+        let s = State {
+            screen: Screen::DiffView {
+                repo: repo(),
+                number: 7,
+                files: vec![],
+                scroll: 0,
+                file_offsets: vec![],
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::SectionJump {
+                count: 1,
+                direction: JumpDirection::Next,
+            },
+        );
+        let Screen::DiffView { scroll, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(scroll, 0);
     }
 }

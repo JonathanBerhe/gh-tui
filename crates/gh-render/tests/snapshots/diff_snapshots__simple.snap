@@ -1,0 +1,11 @@
+---
+source: crates/gh-render/tests/diff_snapshots.rs
+expression: "flatten(&one_file(\"simple\", PatchStatus::Modified, 1, 1))"
+---
+src/simple.rs (modified)
++1 -1
+@@ -1,3 +1,3 @@
+ line one
+-line two
++line TWO
+ line three

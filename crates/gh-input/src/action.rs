@@ -52,6 +52,8 @@ pub enum Action {
     },
     /// Activate the current selection (Enter on a list row).
     Open,
+    /// Open the diff sub-view from PR detail (Tab).
+    OpenDiff,
     /// Pop one screen off the nav stack (Backspace from a sub-screen).
     Back,
     /// Jump to the next/previous "section" within the current screen

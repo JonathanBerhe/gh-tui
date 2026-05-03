@@ -1,0 +1,7 @@
+---
+source: crates/gh-render/tests/diff_snapshots.rs
+expression: flatten(&files)
+---
+vendor/big_blob.bin (modified)
++0 -0
+[diff omitted: file too large or binary]
