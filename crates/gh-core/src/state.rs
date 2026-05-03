@@ -2,7 +2,7 @@
 
 use crate::{
     auth::AuthState,
-    pulls::{FilePatch, PrDetail, PrSummary, RepoRef},
+    pulls::{FilePatch, PrDetail, PrSummary, RepoRef, ReviewThread},
     rate_limit::RateLimit,
 };
 
@@ -81,11 +81,13 @@ pub enum Screen {
     LoadingDiff { repo: RepoRef, number: u64 },
     /// PR diff rendered. `scroll` is in logical-line units; `file_offsets` is
     /// the pre-computed line offset of each file's first hunk, used by `{`/`}`
-    /// to jump between files.
+    /// to jump between files. `threads` carries inline review comments
+    /// anchored to file/line in the post-image.
     DiffView {
         repo: RepoRef,
         number: u64,
         files: Vec<FilePatch>,
+        threads: Vec<ReviewThread>,
         scroll: u16,
         file_offsets: Vec<u16>,
         view_mode: DiffViewMode,

@@ -16,9 +16,10 @@
 //! italic placeholder. A blank line separates consecutive files.
 
 pub mod split;
+pub mod threads;
 pub mod word;
 
-use gh_core::{FilePatch, PatchStatus};
+use gh_core::{FilePatch, PatchStatus, ReviewThread};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -31,11 +32,11 @@ use crate::syntax::{self, Lang};
 /// Per file, if [`syntax::detect`] returns a non-`Plain` language, the
 /// renderer reconstructs the post-image (context + `+` lines) and runs
 /// tree-sitter highlighting once. Context and `+` lines then use the
-/// per-token styled spans from that lookup; `-` lines stay solid red until
-/// PR #3 introduces word-level pairing. Plain-language files take a fast
-/// path that skips the highlighter entirely.
+/// per-token styled spans from that lookup. After the body is laid out,
+/// matching review threads inject pseudo-lines beneath the anchor row
+/// (path + new-file line number).
 #[must_use]
-pub fn render(files: &[FilePatch]) -> Vec<Line<'static>> {
+pub fn render(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, file) in files.iter().enumerate() {
         if i > 0 {
@@ -43,6 +44,7 @@ pub fn render(files: &[FilePatch]) -> Vec<Line<'static>> {
         }
         render_file(file, &mut lines);
     }
+    threads::inject_inline(&mut lines, files, threads);
     lines
 }
 
@@ -207,12 +209,14 @@ pub(super) fn reconstruct_after(patch: &str) -> String {
 ///
 /// Cheap: walks `patch.lines()` once per file to count, never allocates a
 /// `Line` or `Span`. Workers call this on the message-passing path so the
-/// hot render path runs only inside the UI loop.
+/// hot render path runs only inside the UI loop. The thread parameter is
+/// counted into the offsets so jumps remain accurate after pseudo-line
+/// injection.
 ///
 /// Saturates at `u16::MAX`; jumps in diffs longer than 65535 lines will land
 /// at the final saturated offset rather than the file's true position.
 #[must_use]
-pub fn file_line_offsets(files: &[FilePatch]) -> Vec<u16> {
+pub fn file_line_offsets(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<u16> {
     let mut offsets: Vec<u16> = Vec::with_capacity(files.len());
     let mut total: u32 = 0;
     for (i, file) in files.iter().enumerate() {
@@ -231,6 +235,13 @@ pub fn file_line_offsets(files: &[FilePatch]) -> Vec<u16> {
             _ => 1,
         };
         total = total.saturating_add(body_lines);
+        // Thread pseudo-lines anchored to lines in this file.
+        let thread_lines: u32 = threads
+            .iter()
+            .filter(|t| t.path == file.path && t.line.is_some())
+            .map(|t| u32::try_from(threads::pseudo_line_count(t)).unwrap_or(u32::MAX))
+            .sum();
+        total = total.saturating_add(thread_lines);
     }
     offsets
 }
@@ -352,15 +363,15 @@ mod tests {
 
     #[test]
     fn empty_input_renders_no_lines() {
-        let lines = render(&[]);
+        let lines = render(&[], &[]);
         assert!(lines.is_empty());
-        assert!(file_line_offsets(&[]).is_empty());
+        assert!(file_line_offsets(&[], &[]).is_empty());
     }
 
     #[test]
     fn missing_patch_renders_placeholder() {
         let files = vec![fp("a.rs", None, PatchStatus::Modified)];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // header + stats + placeholder
         assert_eq!(lines.len(), 3);
         let placeholder = &lines[2].spans[0].content;
@@ -371,7 +382,7 @@ mod tests {
     fn simple_patch_renders_header_stats_and_hunk_lines() {
         let patch = "@@ -1,2 +1,2 @@\n one\n-two\n+TWO";
         let files = vec![fp("a.rs", Some(patch), PatchStatus::Modified)];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // header, stats, @@, " one", "-two", "+TWO" → 6
         assert_eq!(lines.len(), 6);
     }
@@ -380,7 +391,7 @@ mod tests {
     fn renamed_file_header_shows_arrow() {
         let mut file = fp("new.rs", None, PatchStatus::Renamed);
         file.previous_path = Some("old.rs".into());
-        let lines = render(&[file]);
+        let lines = render(&[file], &[]);
         let header = &lines[0].spans[0].content;
         assert!(header.contains("old.rs → new.rs"));
         assert!(header.contains("renamed"));
@@ -392,7 +403,7 @@ mod tests {
             fp("a.rs", Some("@@ -1 +1 @@\n+x"), PatchStatus::Modified),
             fp("b.rs", Some("@@ -1 +1 @@\n+y"), PatchStatus::Modified),
         ];
-        let offsets = file_line_offsets(&files);
+        let offsets = file_line_offsets(&files, &[]);
         assert_eq!(offsets.len(), 2);
         assert_eq!(offsets[0], 0, "first file starts at line 0");
         // first file: header(1) + stats(1) + @@(1) + +x(1) = 4 lines, then
@@ -412,7 +423,7 @@ mod tests {
             patch: Some(patch.into()),
             blob_sha: "x".into(),
         }];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // Layout: header, stats, @@, " fn old() {}", "+fn new() {}"
         let plus_line = &lines[4];
         // Prefix span is "+", then syntax-coloured tokens. Look for the
@@ -442,7 +453,7 @@ mod tests {
             patch: Some(patch.into()),
             blob_sha: "x".into(),
         }];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // Layout: header, stats, @@, "+fn..."
         let plus_line = &lines[3];
         // Plain-language path emits prefix + single solid-green body span.
@@ -470,7 +481,7 @@ mod tests {
             patch: Some(patch.into()),
             blob_sha: "x".into(),
         }];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // Layout: header, stats, @@, "-a", "-b", "+c"
         for raw_line in &lines[3..=4] {
             assert_eq!(raw_line.spans.len(), 1, "unpaired deletion is one span");
@@ -491,7 +502,7 @@ mod tests {
             patch: Some(patch.into()),
             blob_sha: "x".into(),
         }];
-        let lines = render(&files);
+        let lines = render(&files, &[]);
         // Paired `-` line is no longer one solid span; it's prefix + per-word
         // spans where `old` carries the bold red bg overlay.
         let minus_line = &lines[3];
@@ -546,8 +557,8 @@ mod tests {
             fp("b.rs", None, PatchStatus::Modified),
             fp("c.rs", Some("@@ -1 +1 @@\n+x"), PatchStatus::Added),
         ];
-        let lines = render(&files);
-        let offsets = file_line_offsets(&files);
+        let lines = render(&files, &[]);
+        let offsets = file_line_offsets(&files, &[]);
         for (i, file) in files.iter().enumerate() {
             let idx = usize::from(offsets[i]);
             let header_text = &lines[idx].spans[0].content;

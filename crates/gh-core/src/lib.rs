@@ -19,7 +19,8 @@ pub use cmd::Cmd;
 pub use msg::{JumpDirection, Msg, SelectionJump};
 pub use pulls::{
     ChecksState, ChecksSummary, FilePatch, Mergeable, ParseRepoRefError, PatchStatus, PrDetail,
-    PrState, PrSummary, RepoRef, ReviewDecision, ReviewState, ReviewSummary,
+    PrState, PrSummary, RepoRef, ReviewComment, ReviewDecision, ReviewState, ReviewSummary,
+    ReviewThread,
 };
 pub use rate_limit::{RateLimit, Tier};
 pub use reducer::{initial_commands, reduce};

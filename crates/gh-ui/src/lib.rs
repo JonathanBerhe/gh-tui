@@ -45,11 +45,12 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         }
         Screen::DiffView {
             files,
+            threads,
             scroll,
             view_mode,
             ..
         } => {
-            screens::diff_view::draw(files, *scroll, *view_mode, frame, chunks[0]);
+            screens::diff_view::draw(files, threads, *scroll, *view_mode, frame, chunks[0]);
         }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);

@@ -6,11 +6,16 @@
 
 use std::fs;
 
-use gh_core::{FilePatch, PatchStatus};
+use chrono::{TimeZone, Utc};
+use gh_core::{FilePatch, PatchStatus, ReviewComment, ReviewThread};
 use gh_render::render_diff;
 
 fn flatten(files: &[FilePatch]) -> String {
-    let lines = render_diff(files);
+    flatten_with_threads(files, &[])
+}
+
+fn flatten_with_threads(files: &[FilePatch], threads: &[ReviewThread]) -> String {
+    let lines = render_diff(files, threads);
     lines
         .into_iter()
         .map(|l| {
@@ -170,6 +175,83 @@ fn word_unbalanced_block() {
         1,
         3,
     )));
+}
+
+#[test]
+fn diff_with_one_thread() {
+    // word_simple.patch's `+` line is at new-file line 2 (after `unchanged`).
+    let files = vec![FilePatch {
+        path: "src/foo.rs".into(),
+        previous_path: None,
+        status: PatchStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        patch: Some(fixture("word_simple")),
+        blob_sha: "x".into(),
+    }];
+    let ts = Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap();
+    let threads = vec![ReviewThread {
+        path: "src/foo.rs".into(),
+        line: Some(2),
+        original_line: Some(2),
+        comments: vec![ReviewComment {
+            author: "alice".into(),
+            body: "rename to total_count".into(),
+            created_at: ts,
+        }],
+    }];
+    insta::assert_snapshot!(flatten_with_threads(&files, &threads));
+}
+
+#[test]
+fn diff_with_multiline_comment_thread() {
+    let files = vec![FilePatch {
+        path: "src/foo.rs".into(),
+        previous_path: None,
+        status: PatchStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        patch: Some(fixture("word_simple")),
+        blob_sha: "x".into(),
+    }];
+    let ts = Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap();
+    let threads = vec![ReviewThread {
+        path: "src/foo.rs".into(),
+        line: Some(2),
+        original_line: Some(2),
+        comments: vec![ReviewComment {
+            author: "bob".into(),
+            body: "this looks risky\ndid you check the boundary case?".into(),
+            created_at: ts,
+        }],
+    }];
+    insta::assert_snapshot!(flatten_with_threads(&files, &threads));
+}
+
+#[test]
+fn diff_with_outdated_thread_skipped() {
+    let files = vec![FilePatch {
+        path: "src/foo.rs".into(),
+        previous_path: None,
+        status: PatchStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        patch: Some(fixture("word_simple")),
+        blob_sha: "x".into(),
+    }];
+    let ts = Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap();
+    // line: None marks the thread outdated — should NOT inject pseudo-lines.
+    let threads = vec![ReviewThread {
+        path: "src/foo.rs".into(),
+        line: None,
+        original_line: Some(2),
+        comments: vec![ReviewComment {
+            author: "alice".into(),
+            body: "stale comment".into(),
+            created_at: ts,
+        }],
+    }];
+    insta::assert_snapshot!(flatten_with_threads(&files, &threads));
 }
 
 #[test]

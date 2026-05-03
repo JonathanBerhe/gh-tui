@@ -48,10 +48,10 @@ fn renders_5k_lines_under_one_second() {
     let files = synthetic_patch(5_000, 100);
     // Warm caches: tree-sitter HighlightConfiguration in the OnceLock,
     // CPU caches, allocator, etc. We measure only the steady-state cost.
-    let _warmup = render_diff(&files);
+    let _warmup = render_diff(&files, &[]);
 
     let start = Instant::now();
-    let lines = render_diff(&files);
+    let lines = render_diff(&files, &[]);
     let elapsed = start.elapsed();
 
     // Sanity: output should be roughly the input line count plus headers.

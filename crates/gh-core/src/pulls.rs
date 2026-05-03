@@ -246,6 +246,26 @@ impl PatchStatus {
     }
 }
 
+/// A single comment on a PR review thread. Read-only (write side is Phase 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A line-level discussion thread on a PR. `line` is the new-file line
+/// number (1-based) the thread is anchored to; `None` when the thread is
+/// outdated (the line no longer exists in the head). `original_line`
+/// preserves where the discussion started for outdated threads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewThread {
+    pub path: String,
+    pub line: Option<u32>,
+    pub original_line: Option<u32>,
+    pub comments: Vec<ReviewComment>,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

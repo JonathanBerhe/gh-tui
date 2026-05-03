@@ -13,7 +13,7 @@
 //! (right column for context and unpaired adds). Pre-image / paired pairs
 //! use the word-level palette.
 
-use gh_core::FilePatch;
+use gh_core::{FilePatch, ReviewThread};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -21,13 +21,18 @@ use ratatui::{
 
 use super::{
     diff_omitted, file_header, file_stats, hunk_header_line, no_newline_line, reconstruct_after,
-    word,
+    threads, word,
 };
 use crate::syntax::{self, Lang};
 
-/// Render a sequence of file patches into split-view row pairs.
+/// Render a sequence of file patches into split-view row pairs. Inline
+/// review threads (when supplied) are injected as `(filler, pseudo_line)`
+/// pairs beneath the matching anchor row.
 #[must_use]
-pub fn render(files: &[FilePatch]) -> Vec<(Line<'static>, Line<'static>)> {
+pub fn render(
+    files: &[FilePatch],
+    review_threads: &[ReviewThread],
+) -> Vec<(Line<'static>, Line<'static>)> {
     let mut rows: Vec<(Line<'static>, Line<'static>)> = Vec::new();
     for (i, file) in files.iter().enumerate() {
         if i > 0 {
@@ -35,6 +40,7 @@ pub fn render(files: &[FilePatch]) -> Vec<(Line<'static>, Line<'static>)> {
         }
         render_file(file, &mut rows);
     }
+    threads::inject_inline_split(&mut rows, files, review_threads);
     rows
 }
 
@@ -217,7 +223,7 @@ mod tests {
 
     #[test]
     fn empty_input_yields_no_rows() {
-        let rows = render(&[]);
+        let rows = render(&[], &[]);
         assert!(rows.is_empty());
     }
 
@@ -225,7 +231,7 @@ mod tests {
     fn balanced_block_pairs_minus_left_plus_right() {
         let patch = "@@ -1,3 +1,3 @@\n ctx\n-old\n+new\n trailing";
         let files = vec![fp("src/foo.rs", Some(patch))];
-        let rows = render(&files);
+        let rows = render(&files, &[]);
         // Layout: header, stats, @@, ctx (both sides), pair (- on left, + on right), trailing.
         // Find the row where left and right differ.
         let pair = rows.iter().find(|(l, r)| {
@@ -242,7 +248,7 @@ mod tests {
         // is present and right gets a filler when only `-` is.
         let patch = "@@ -1,3 +1,2 @@\n-a\n-b\n+c";
         let files = vec![fp("src/foo.rs", Some(patch))];
-        let rows = render(&files);
+        let rows = render(&files, &[]);
         // Find the `+c` row: right side contains "c", left side is the filler.
         let plus_row = rows
             .iter()
@@ -278,7 +284,7 @@ mod tests {
     #[test]
     fn omitted_patch_renders_placeholder_on_both_sides() {
         let files = vec![fp("vendor/big.bin", None)];
-        let rows = render(&files);
+        let rows = render(&files, &[]);
         // Layout: header (×2 columns), stats (×2), placeholder (×2).
         let placeholder_row = rows.last().unwrap();
         let left: String = placeholder_row
@@ -301,7 +307,7 @@ mod tests {
     fn context_lines_appear_identically_on_both_sides() {
         let patch = "@@ -1 +1 @@\n unchanged context";
         let files = vec![fp("src/foo.rs", Some(patch))];
-        let rows = render(&files);
+        let rows = render(&files, &[]);
         let ctx_row = rows
             .iter()
             .find(|(l, _)| {

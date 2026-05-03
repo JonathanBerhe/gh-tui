@@ -196,6 +196,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             repo,
             number,
             files,
+            threads,
             file_offsets,
         } => {
             // Only consume when we're still waiting for THIS diff. Stale
@@ -210,6 +211,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                         repo,
                         number,
                         files,
+                        threads,
                         scroll: 0,
                         file_offsets,
                         view_mode: DiffViewMode::default(),
@@ -1296,6 +1298,7 @@ mod tests {
                 number: 7,
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 file_offsets: vec![0, 12],
+                threads: Vec::new(),
             },
         );
         let Screen::DiffView {
@@ -1328,9 +1331,45 @@ mod tests {
                 number: 99,
                 files: vec![file_patch("x.rs")],
                 file_offsets: vec![0],
+                threads: Vec::new(),
             },
         );
         assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+    }
+
+    #[test]
+    fn diff_ready_with_threads_includes_threads_in_state() {
+        let s = State {
+            screen: Screen::LoadingDiff {
+                repo: repo(),
+                number: 7,
+            },
+            ..State::default()
+        };
+        let thread = crate::pulls::ReviewThread {
+            path: "src/foo.rs".into(),
+            line: Some(42),
+            original_line: Some(42),
+            comments: vec![crate::pulls::ReviewComment {
+                author: "alice".into(),
+                body: "looks good".into(),
+                created_at: chrono::Utc::now(),
+            }],
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("src/foo.rs")],
+                threads: vec![thread.clone()],
+                file_offsets: vec![0],
+            },
+        );
+        let Screen::DiffView { threads, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(threads, vec![thread]);
     }
 
     #[test]
@@ -1369,6 +1408,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             nav_stack: vec![prior],
@@ -1388,6 +1428,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1408,6 +1449,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1428,6 +1470,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
                 scroll: 0,
                 file_offsets: vec![0, 10, 20],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1454,6 +1497,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
             ..State::default()
@@ -1471,6 +1515,7 @@ mod tests {
                     files: vec![file_patch("a.rs")],
                     scroll: 0,
                     file_offsets: vec![0],
+                    threads: Vec::new(),
                     view_mode,
                 },
                 ..State::default()
@@ -1502,6 +1547,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 scroll: 42,
                 file_offsets: vec![0, 30],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
             ..State::default()
@@ -1530,6 +1576,7 @@ mod tests {
                 files: vec![],
                 scroll: 0,
                 file_offsets: vec![],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()

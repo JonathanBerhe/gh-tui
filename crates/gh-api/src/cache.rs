@@ -69,6 +69,17 @@ impl EtagCache {
         Self::InMemory(Arc::new(Mutex::new(HashMap::new())))
     }
 
+    /// Underlying SQLite pool when persistent. `None` for the in-memory
+    /// fallback. Used by `BlobCache` to share a single pool/file with the
+    /// etag cache.
+    #[must_use]
+    pub fn pool(&self) -> Option<&SqlitePool> {
+        match self {
+            Self::Persistent(p) => Some(p),
+            Self::InMemory(_) => None,
+        }
+    }
+
     pub async fn get(&self, url: &str) -> Option<CachedEntry> {
         match self {
             Self::Persistent(pool) => {
