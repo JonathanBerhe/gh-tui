@@ -5,6 +5,8 @@
 //!
 //! Phase 4 ships markdown only.
 
+pub mod diff;
 pub mod markdown;
 
+pub use diff::{file_line_offsets, render as render_diff};
 pub use markdown::render as render_markdown;

@@ -46,6 +46,12 @@ pub fn status_bar(state: &State) -> Paragraph<'static> {
             format!("  {} #{}", repo.slug(), detail.number),
             Style::default().fg(Color::DarkGray),
         ),
+        Screen::LoadingDiff { repo, number } | Screen::DiffView { repo, number, .. } => {
+            Span::styled(
+                format!("  {} #{number} — diff", repo.slug()),
+                Style::default().fg(Color::DarkGray),
+            )
+        }
         Screen::Welcome | Screen::Error { .. } => Span::raw(String::new()),
     };
 

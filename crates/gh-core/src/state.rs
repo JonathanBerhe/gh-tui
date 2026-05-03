@@ -2,7 +2,7 @@
 
 use crate::{
     auth::AuthState,
-    pulls::{PrDetail, PrSummary, RepoRef},
+    pulls::{FilePatch, PrDetail, PrSummary, RepoRef},
     rate_limit::RateLimit,
 };
 
@@ -56,6 +56,18 @@ pub enum Screen {
         detail: PrDetail,
         scroll: u16,
         review_offsets: Vec<u16>,
+    },
+    /// Waiting for the per-file diff (REST `/pulls/{n}/files`) response.
+    LoadingDiff { repo: RepoRef, number: u64 },
+    /// PR diff rendered. `scroll` is in logical-line units; `file_offsets` is
+    /// the pre-computed line offset of each file's first hunk, used by `{`/`}`
+    /// to jump between files.
+    DiffView {
+        repo: RepoRef,
+        number: u64,
+        files: Vec<FilePatch>,
+        scroll: u16,
+        file_offsets: Vec<u16>,
     },
     /// Unrecoverable error; user-facing message + optional hint.
     Error {

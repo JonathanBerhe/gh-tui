@@ -16,6 +16,7 @@ pub mod cache;
 pub mod cache_path;
 pub mod client;
 pub mod graphql;
+pub mod pr_files;
 pub mod pulls;
 pub mod repo;
 
@@ -23,5 +24,6 @@ pub use cache::{CacheError, CachedEntry, EtagCache};
 pub use cache_path::cache_db_path;
 pub use client::{ApiError, Client, ClientError, Page};
 pub use graphql::{fetch_pr_detail, pr_detail::PrDetailError};
+pub use pr_files::{fetch_pr_files, PrFilesError};
 pub use pulls::{fetch_open_prs_page, PrPage, PullsError};
 pub use repo::{resolve_from_cwd, RepoResolveError};

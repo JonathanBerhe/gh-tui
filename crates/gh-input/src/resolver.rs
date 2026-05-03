@@ -129,12 +129,16 @@ impl Resolver {
                 Resolution::Pending
             }
 
-            // Activation / back-navigation. Enter and Backspace bypass the
-            // grammar accumulator entirely (they're not vim operators or
+            // Activation / back-navigation. Enter, Tab and Backspace bypass
+            // the grammar accumulator entirely (they're not vim operators or
             // motions); pending state is reset just like a quit binding.
             KeyCode::Enter => {
                 self.reset();
                 Resolution::Action(Action::Open)
+            }
+            KeyCode::Tab => {
+                self.reset();
+                Resolution::Action(Action::OpenDiff)
             }
             KeyCode::Backspace => {
                 self.reset();
@@ -695,6 +699,22 @@ mod tests {
     #[test]
     fn enter_emits_open() {
         assert_eq!(final_action(&[k(KeyCode::Enter)]), Action::Open);
+    }
+
+    #[test]
+    fn tab_emits_open_diff() {
+        assert_eq!(final_action(&[k(KeyCode::Tab)]), Action::OpenDiff);
+    }
+
+    #[test]
+    fn tab_resets_pending_command() {
+        let mut r = Resolver::new();
+        assert_eq!(r.feed(ch('d')), Resolution::Pending);
+        assert_eq!(
+            r.feed(k(KeyCode::Tab)),
+            Resolution::Action(Action::OpenDiff)
+        );
+        assert_eq!(r.pending_display(), "");
     }
 
     #[test]

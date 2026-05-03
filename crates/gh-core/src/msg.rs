@@ -4,7 +4,7 @@
 //! to `gh_input::Action` first; the binary maps `Action -> Msg`.
 
 use crate::{
-    pulls::{PrDetail, PrSummary, RepoRef},
+    pulls::{FilePatch, PrDetail, PrSummary, RepoRef},
     rate_limit::RateLimit,
 };
 
@@ -47,14 +47,28 @@ pub enum Msg {
     },
     /// PR detail GraphQL request failed.
     PrDetailFailed(String),
+    /// User pressed Tab from the PR detail screen.
+    OpenDiff,
+    /// Per-file diff fetch landed. `file_offsets` is the rendered line offset
+    /// of each file's first hunk (computed by the worker via `gh_render`) so
+    /// the reducer can serve `{`/`}` jumps without pulling `gh-render` into
+    /// `gh-core`.
+    DiffReady {
+        repo: RepoRef,
+        number: u64,
+        files: Vec<FilePatch>,
+        file_offsets: Vec<u16>,
+    },
+    /// Per-file diff fetch failed.
+    DiffFailed(String),
     /// Move the selection in the PR list.
     SelectionDelta(i32),
     /// Jump selection to first or last item.
     SelectionJump(SelectionJump),
-    /// Jump scroll position to the next/prev section (review entry,
-    /// diff hunk, etc.) within the current screen. Counted via vim-style
-    /// `count{` / `count}`.
-    ReviewJump {
+    /// Jump scroll position to the next/prev section within the current
+    /// screen — review entry in `PrDetail`, file in `DiffView`, etc. Counted
+    /// via vim-style `count{` / `count}`.
+    SectionJump {
         count: usize,
         direction: JumpDirection,
     },
