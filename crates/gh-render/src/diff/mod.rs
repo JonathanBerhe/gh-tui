@@ -15,6 +15,8 @@
 //! Files with `patch == None` (too large / binary) render as a single dim
 //! italic placeholder. A blank line separates consecutive files.
 
+pub mod word;
+
 use gh_core::{FilePatch, PatchStatus};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -63,31 +65,113 @@ fn render_file(file: &FilePatch, lines: &mut Vec<Line<'static>>) {
         Some(syntax::highlight(lang, &after))
     };
 
-    let mut after_idx: usize = 0;
+    let mut walker = ChangeBlockWalker::default();
     for raw in patch.lines() {
+        walker.consume(raw, highlighted.as_ref(), lines);
+    }
+    walker.flush(highlighted.as_ref(), lines);
+}
+
+/// Stateful walker that buffers consecutive `-`/`+` runs and pairs them
+/// 1:1 for word-level highlighting when the runs are balanced. Other line
+/// kinds (context, hunk header, no-newline marker) flush the pending run
+/// and emit normally.
+#[derive(Default)]
+struct ChangeBlockWalker {
+    /// Pending `-` lines, raw (with the `-` prefix).
+    minus: Vec<String>,
+    /// Pending `+` lines, raw (with the `+` prefix).
+    plus: Vec<String>,
+    /// Current 0-based index into the post-image (for syntax span lookup).
+    after_idx: usize,
+    /// `after_idx` at the start of the current `+` run (so we can index
+    /// per paired line on flush).
+    plus_run_start: usize,
+}
+
+impl ChangeBlockWalker {
+    fn consume(
+        &mut self,
+        raw: &str,
+        highlighted: Option<&Vec<Vec<Span<'static>>>>,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         if raw.starts_with("@@") {
+            self.flush(highlighted, lines);
             lines.push(hunk_header_line(raw));
-            continue;
+            return;
         }
         match raw.chars().next() {
             Some('+') => {
-                lines.push(addition_line(raw, highlighted.as_ref(), after_idx));
-                after_idx += 1;
+                if self.plus.is_empty() {
+                    self.plus_run_start = self.after_idx;
+                }
+                self.plus.push(raw.to_string());
+                self.after_idx += 1;
             }
             Some('-') => {
-                lines.push(deletion_line(raw));
+                // `-` after `+` ends a block; flush before starting a new run.
+                if !self.plus.is_empty() {
+                    self.flush(highlighted, lines);
+                }
+                self.minus.push(raw.to_string());
             }
             Some('\\') => {
+                self.flush(highlighted, lines);
                 lines.push(no_newline_line(raw));
             }
-            // Context line (leading space) or truly blank line — both go in
-            // the after-image, so increment the index in lockstep.
+            // Context line (leading space) or truly blank line — flush
+            // pending run, then emit normally.
             _ => {
-                lines.push(context_line(raw, highlighted.as_ref(), after_idx));
-                after_idx += 1;
+                self.flush(highlighted, lines);
+                lines.push(context_line(raw, highlighted, self.after_idx));
+                self.after_idx += 1;
             }
         }
     }
+
+    fn flush(
+        &mut self,
+        highlighted: Option<&Vec<Vec<Span<'static>>>>,
+        lines: &mut Vec<Line<'static>>,
+    ) {
+        let minus = std::mem::take(&mut self.minus);
+        let plus = std::mem::take(&mut self.plus);
+        let plus_start = self.plus_run_start;
+        self.plus_run_start = 0;
+
+        // Balanced 1:1 paired block — word-level intra-line highlighting.
+        if !minus.is_empty() && minus.len() == plus.len() {
+            for (m, p) in minus.iter().zip(plus.iter()) {
+                let old = m.get(1..).unwrap_or("");
+                let new = p.get(1..).unwrap_or("");
+                let (m_spans, p_spans) = word::intra_line_highlight(old, new);
+                lines.push(paired_minus_line(m_spans));
+                lines.push(paired_plus_line(p_spans));
+            }
+            return;
+        }
+
+        // Unbalanced or one-sided — fall back to whole-line styling.
+        for raw in &minus {
+            lines.push(deletion_line(raw));
+        }
+        for (i, raw) in plus.iter().enumerate() {
+            lines.push(addition_line(raw, highlighted, plus_start + i));
+        }
+    }
+}
+
+fn paired_minus_line(spans: Vec<Span<'static>>) -> Line<'static> {
+    let mut out = vec![Span::styled("-", Style::default().fg(Color::Red))];
+    out.extend(spans);
+    Line::from(out)
+}
+
+fn paired_plus_line(spans: Vec<Span<'static>>) -> Line<'static> {
+    let mut out = vec![Span::styled("+", Style::default().fg(Color::Green))];
+    out.extend(spans);
+    Line::from(out)
 }
 
 /// Pull just the post-image lines (context + additions) out of a patch,
@@ -373,7 +457,29 @@ mod tests {
     }
 
     #[test]
-    fn deletion_lines_stay_solid_red_even_with_syntax() {
+    fn unpaired_deletion_stays_solid_red() {
+        // 2 - lines + 1 + line is unbalanced → fall back to whole-line red.
+        let patch = "@@ -1,3 +1,2 @@\n-a\n-b\n+c";
+        let files = vec![FilePatch {
+            path: "src/foo.rs".into(),
+            previous_path: None,
+            status: PatchStatus::Modified,
+            additions: 1,
+            deletions: 2,
+            patch: Some(patch.into()),
+            blob_sha: "x".into(),
+        }];
+        let lines = render(&files);
+        // Layout: header, stats, @@, "-a", "-b", "+c"
+        for raw_line in &lines[3..=4] {
+            assert_eq!(raw_line.spans.len(), 1, "unpaired deletion is one span");
+            assert_eq!(raw_line.spans[0].style.fg, Some(Color::Red));
+        }
+    }
+
+    #[test]
+    fn paired_block_word_highlights_changed_tokens() {
+        // 1 - line and 1 + line of equal count → paired, word-level.
         let patch = "@@ -1 +1 @@\n-fn old() {}\n+fn new() {}";
         let files = vec![FilePatch {
             path: "src/foo.rs".into(),
@@ -385,10 +491,37 @@ mod tests {
             blob_sha: "x".into(),
         }];
         let lines = render(&files);
-        // Layout: header, stats, @@, "-...", "+..."
+        // Paired `-` line is no longer one solid span; it's prefix + per-word
+        // spans where `old` carries the bold red bg overlay.
         let minus_line = &lines[3];
-        assert_eq!(minus_line.spans.len(), 1, "deletion stays as one span");
-        assert_eq!(minus_line.spans[0].style.fg, Some(Color::Red));
+        assert!(
+            minus_line.spans.len() > 1,
+            "paired deletion is split per word"
+        );
+        assert_eq!(minus_line.spans[0].content, "-");
+        // Any span on the minus line must carry the bold word-bg highlight
+        // for the `old` change. Span content varies with similar's word
+        // tokenisation (punctuation may attach), so don't pin it to "old"
+        // exactly — just assert *some* highlighted span exists and that
+        // unhighlighted spans cover the unchanged portions.
+        let any_bold = minus_line
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            any_bold,
+            "expected at least one bold word-highlight on - side"
+        );
+        // The plus line should have its own bold highlight for `new`.
+        let plus_line = &lines[4];
+        let any_bold_plus = plus_line
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            any_bold_plus,
+            "expected at least one bold word-highlight on + side"
+        );
     }
 
     #[test]

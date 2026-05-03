@@ -1,0 +1,11 @@
+---
+source: crates/gh-render/tests/diff_snapshots.rs
+expression: "flatten(&one_file_at(\"word_pure_add\", \"src/word_pure_add.rs\",\nPatchStatus::Modified, 2, 0,))"
+---
+src/word_pure_add.rs (modified)
++2 -0
+@@ -1,2 +1,4 @@
+ first context line
+ second context line
++brand new line one
++brand new line two

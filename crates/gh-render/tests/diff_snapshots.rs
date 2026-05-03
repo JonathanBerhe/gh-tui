@@ -140,6 +140,39 @@ fn mixed_lang() {
 }
 
 #[test]
+fn word_simple() {
+    insta::assert_snapshot!(flatten(&one_file_at(
+        "word_simple",
+        "src/word_simple.rs",
+        PatchStatus::Modified,
+        1,
+        1,
+    )));
+}
+
+#[test]
+fn word_pure_add() {
+    insta::assert_snapshot!(flatten(&one_file_at(
+        "word_pure_add",
+        "src/word_pure_add.rs",
+        PatchStatus::Modified,
+        2,
+        0,
+    )));
+}
+
+#[test]
+fn word_unbalanced_block() {
+    insta::assert_snapshot!(flatten(&one_file_at(
+        "word_unbalanced_block",
+        "src/word_unbalanced.rs",
+        PatchStatus::Modified,
+        1,
+        3,
+    )));
+}
+
+#[test]
 fn multiple_files_separated_by_blank_line() {
     let files = vec![
         FilePatch {
