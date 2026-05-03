@@ -1383,6 +1383,7 @@ dependencies = [
 name = "gh-render"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "criterion",
  "gh-core",
  "insta",
@@ -1420,6 +1421,7 @@ dependencies = [
 name = "gh-ui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossterm",
  "gh-core",
  "gh-input",

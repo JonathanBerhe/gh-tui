@@ -20,7 +20,11 @@ use ratatui::{
 pub fn draw(state: &State, frame: &mut Frame<'_>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),    // body
+            Constraint::Length(1), // contextual keybindings
+            Constraint::Length(1), // status bar
+        ])
         .split(frame.area());
 
     match &state.screen {
@@ -45,18 +49,20 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         }
         Screen::DiffView {
             files,
+            threads,
             scroll,
             view_mode,
             ..
         } => {
-            screens::diff_view::draw(files, *scroll, *view_mode, frame, chunks[0]);
+            screens::diff_view::draw(files, threads, *scroll, *view_mode, frame, chunks[0]);
         }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);
         }
     }
 
-    frame.render_widget(widgets::status::status_bar(state), chunks[1]);
+    frame.render_widget(widgets::keybinds::keybinds_bar(state), chunks[1]);
+    frame.render_widget(widgets::status::status_bar(state), chunks[2]);
 }
 
 fn draw_loading(slug: &str, frame: &mut Frame<'_>, area: Rect) {

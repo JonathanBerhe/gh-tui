@@ -5,8 +5,10 @@
 //! `#[derive(QueryFragment)]` referencing the `schema` module's types.
 
 pub mod pr_detail;
+pub mod pr_review_threads;
 
 pub use pr_detail::fetch_pr_detail;
+pub use pr_review_threads::fetch_pr_review_threads;
 
 /// Schema bindings used by every query in this module's siblings. The path
 /// is relative to the crate root.

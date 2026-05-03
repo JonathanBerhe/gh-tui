@@ -4,7 +4,7 @@
 //! to `gh_input::Action` first; the binary maps `Action -> Msg`.
 
 use crate::{
-    pulls::{FilePatch, PrDetail, PrSummary, RepoRef},
+    pulls::{FilePatch, PrDetail, PrSummary, RepoRef, ReviewThread},
     rate_limit::RateLimit,
 };
 
@@ -52,11 +52,13 @@ pub enum Msg {
     /// Per-file diff fetch landed. `file_offsets` is the rendered line offset
     /// of each file's first hunk (computed by the worker via `gh_render`) so
     /// the reducer can serve `{`/`}` jumps without pulling `gh-render` into
-    /// `gh-core`.
+    /// `gh-core`. `threads` carries inline review comments fetched in
+    /// parallel via the GraphQL `pullRequest.reviewThreads` query.
     DiffReady {
         repo: RepoRef,
         number: u64,
         files: Vec<FilePatch>,
+        threads: Vec<ReviewThread>,
         file_offsets: Vec<u16>,
     },
     /// Per-file diff fetch failed.

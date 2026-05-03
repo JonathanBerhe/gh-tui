@@ -19,15 +19,17 @@ pub fn draw(detail: &PrDetail, scroll: u16, frame: &mut Frame<'_>, area: Rect) {
         .constraints([
             Constraint::Length(1), // title
             Constraint::Length(1), // meta
+            Constraint::Length(1), // blank — visual breath above the rule
             Constraint::Length(1), // separator
+            Constraint::Length(1), // blank — visual breath below the rule
             Constraint::Min(1),    // body + reviews (scrollable together)
         ])
         .split(area);
 
     frame.render_widget(title_line(detail), chunks[0]);
     frame.render_widget(meta_line(detail), chunks[1]);
-    frame.render_widget(separator(), chunks[2]);
-    frame.render_widget(body_and_reviews(detail, scroll), chunks[3]);
+    frame.render_widget(separator(), chunks[3]);
+    frame.render_widget(body_and_reviews(detail, scroll), chunks[5]);
 }
 
 fn title_line(d: &PrDetail) -> Paragraph<'static> {
@@ -151,6 +153,8 @@ fn body_and_reviews(d: &PrDetail, scroll: u16) -> Paragraph<'static> {
     };
 
     if !d.reviews.is_empty() {
+        // Breathe between markdown body and the reviews block.
+        lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "─".repeat(60),
             Style::default().fg(Color::DarkGray),

@@ -120,31 +120,51 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             };
         }
         Msg::OpenSelectedPr => {
-            // Only meaningful from the PR list. Snapshot the current screen
-            // onto the nav stack and transition to LoadingDetail.
-            if let Screen::PrList {
-                repo,
-                items,
-                selected,
-                ..
-            } = &state.screen
-            {
-                if let Some(pr) = items.get(*selected) {
-                    let number = pr.number;
+            // The "primary forward action" for the active screen — fired by
+            // Enter and `l`. From the PR list it opens the highlighted PR;
+            // from PR detail it opens the diff (a faster `Tab`); from the
+            // diff view it's a no-op.
+            match &state.screen {
+                Screen::PrList {
+                    repo,
+                    items,
+                    selected,
+                    ..
+                } => {
+                    if let Some(pr) = items.get(*selected) {
+                        let number = pr.number;
+                        let repo_ref = repo.clone();
+                        let prior = std::mem::replace(
+                            &mut state.screen,
+                            Screen::LoadingDetail {
+                                repo: repo_ref.clone(),
+                                number,
+                            },
+                        );
+                        state.nav_stack.push(prior);
+                        cmds.push(Cmd::FetchPrDetail {
+                            repo: repo_ref,
+                            number,
+                        });
+                    }
+                }
+                Screen::PrDetail { repo, detail, .. } => {
+                    let number = detail.number;
                     let repo_ref = repo.clone();
                     let prior = std::mem::replace(
                         &mut state.screen,
-                        Screen::LoadingDetail {
+                        Screen::LoadingDiff {
                             repo: repo_ref.clone(),
                             number,
                         },
                     );
                     state.nav_stack.push(prior);
-                    cmds.push(Cmd::FetchPrDetail {
+                    cmds.push(Cmd::FetchPrDiff {
                         repo: repo_ref,
                         number,
                     });
                 }
+                _ => {}
             }
         }
         Msg::PrDetailReady { detail, body_lines } => {
@@ -196,6 +216,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             repo,
             number,
             files,
+            threads,
             file_offsets,
         } => {
             // Only consume when we're still waiting for THIS diff. Stale
@@ -210,6 +231,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                         repo,
                         number,
                         files,
+                        threads,
                         scroll: 0,
                         file_offsets,
                         view_mode: DiffViewMode::default(),
@@ -853,6 +875,18 @@ mod tests {
     }
 
     #[test]
+    fn open_selected_pr_in_pr_detail_opens_diff() {
+        // `l` (and Enter) from PR detail acts as the screen's primary
+        // forward — same effect as Tab.
+        let (s2, cmds) = reduce(pr_detail_state(7), Msg::OpenSelectedPr);
+        assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+        assert_eq!(s2.nav_stack.len(), 1);
+        assert!(matches!(s2.nav_stack[0], Screen::PrDetail { .. }));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Cmd::FetchPrDiff { number: 7, .. }));
+    }
+
+    #[test]
     fn pr_detail_ready_transitions_to_pr_detail() {
         let s = State {
             screen: Screen::LoadingDetail {
@@ -1296,6 +1330,7 @@ mod tests {
                 number: 7,
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 file_offsets: vec![0, 12],
+                threads: Vec::new(),
             },
         );
         let Screen::DiffView {
@@ -1328,9 +1363,45 @@ mod tests {
                 number: 99,
                 files: vec![file_patch("x.rs")],
                 file_offsets: vec![0],
+                threads: Vec::new(),
             },
         );
         assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+    }
+
+    #[test]
+    fn diff_ready_with_threads_includes_threads_in_state() {
+        let s = State {
+            screen: Screen::LoadingDiff {
+                repo: repo(),
+                number: 7,
+            },
+            ..State::default()
+        };
+        let thread = crate::pulls::ReviewThread {
+            path: "src/foo.rs".into(),
+            line: Some(42),
+            original_line: Some(42),
+            comments: vec![crate::pulls::ReviewComment {
+                author: "alice".into(),
+                body: "looks good".into(),
+                created_at: chrono::Utc::now(),
+            }],
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("src/foo.rs")],
+                threads: vec![thread.clone()],
+                file_offsets: vec![0],
+            },
+        );
+        let Screen::DiffView { threads, .. } = s2.screen else {
+            panic!("expected DiffView");
+        };
+        assert_eq!(threads, vec![thread]);
     }
 
     #[test]
@@ -1369,6 +1440,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             nav_stack: vec![prior],
@@ -1388,6 +1460,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1408,6 +1481,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1428,6 +1502,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
                 scroll: 0,
                 file_offsets: vec![0, 10, 20],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()
@@ -1454,6 +1529,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
             ..State::default()
@@ -1471,6 +1547,7 @@ mod tests {
                     files: vec![file_patch("a.rs")],
                     scroll: 0,
                     file_offsets: vec![0],
+                    threads: Vec::new(),
                     view_mode,
                 },
                 ..State::default()
@@ -1502,6 +1579,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 scroll: 42,
                 file_offsets: vec![0, 30],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
             ..State::default()
@@ -1530,6 +1608,7 @@ mod tests {
                 files: vec![],
                 scroll: 0,
                 file_offsets: vec![],
+                threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
             ..State::default()

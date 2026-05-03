@@ -18,7 +18,7 @@ fn flatten_pair((left, right): &(Line<'static>, Line<'static>)) -> String {
 }
 
 fn flatten(files: &[FilePatch]) -> String {
-    render_diff_split(files)
+    render_diff_split(files, &[])
         .iter()
         .map(flatten_pair)
         .collect::<Vec<_>>()

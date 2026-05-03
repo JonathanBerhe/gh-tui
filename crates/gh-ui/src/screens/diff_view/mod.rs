@@ -5,7 +5,7 @@
 
 mod split;
 
-use gh_core::{DiffViewMode, FilePatch};
+use gh_core::{DiffViewMode, FilePatch, ReviewThread};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -16,6 +16,7 @@ use ratatui::{
 
 pub fn draw(
     files: &[FilePatch],
+    threads: &[ReviewThread],
     scroll: u16,
     view_mode: DiffViewMode,
     frame: &mut Frame<'_>,
@@ -26,21 +27,29 @@ pub fn draw(
         .constraints([
             Constraint::Length(1), // title
             Constraint::Length(1), // summary
+            Constraint::Length(1), // blank — visual breath above the rule
             Constraint::Length(1), // separator
+            Constraint::Length(1), // blank — visual breath below the rule
             Constraint::Min(1),    // body
         ])
         .split(area);
 
-    frame.render_widget(title_line(files.len(), view_mode), chunks[0]);
+    frame.render_widget(title_line(files.len(), threads.len(), view_mode), chunks[0]);
     frame.render_widget(summary_line(files), chunks[1]);
-    frame.render_widget(separator(), chunks[2]);
+    frame.render_widget(separator(), chunks[3]);
     match view_mode {
-        DiffViewMode::Unified => frame.render_widget(unified_body(files, scroll), chunks[3]),
-        DiffViewMode::Split => split::draw(files, scroll, frame, chunks[3]),
+        DiffViewMode::Unified => {
+            frame.render_widget(unified_body(files, threads, scroll), chunks[5]);
+        }
+        DiffViewMode::Split => split::draw(files, threads, scroll, frame, chunks[5]),
     }
 }
 
-fn title_line(file_count: usize, view_mode: DiffViewMode) -> Paragraph<'static> {
+fn title_line(
+    file_count: usize,
+    thread_count: usize,
+    view_mode: DiffViewMode,
+) -> Paragraph<'static> {
     let label = Span::styled(
         "diff",
         Style::default()
@@ -64,7 +73,17 @@ fn title_line(file_count: usize, view_mode: DiffViewMode) -> Paragraph<'static> 
         ),
         Style::default().fg(Color::DarkGray),
     );
-    Paragraph::new(Line::from(vec![label, count, mode]))
+    let mut spans = vec![label, count, mode];
+    if thread_count > 0 {
+        spans.push(Span::styled(
+            format!(
+                "  •  {thread_count} review thread{}",
+                if thread_count == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Paragraph::new(Line::from(spans))
 }
 
 fn summary_line(files: &[FilePatch]) -> Paragraph<'static> {
@@ -98,14 +117,14 @@ fn separator() -> Paragraph<'static> {
     )))
 }
 
-fn unified_body(files: &[FilePatch], scroll: u16) -> Paragraph<'static> {
+fn unified_body(files: &[FilePatch], threads: &[ReviewThread], scroll: u16) -> Paragraph<'static> {
     let lines = if files.is_empty() {
         vec![Line::from(Span::styled(
             "(no changed files)",
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        gh_render::render_diff(files)
+        gh_render::render_diff(files, threads)
     };
 
     Paragraph::new(lines)

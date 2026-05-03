@@ -140,7 +140,13 @@ fn action_to_msg(action: Action) -> Option<Msg> {
             )),
             Motion::DocStart => Some(Msg::SelectionJump(SelectionJump::First)),
             Motion::DocEnd => Some(Msg::SelectionJump(SelectionJump::Last)),
-            // h/l/w/b/$/0 not bound for the PR list yet — quietly ignore.
+            // Repurpose horizontal motions for nav-stack movement: there's
+            // no horizontal cursor concept in this app, so `l`/`h` give us
+            // a vim-spatial "into / back". If we ever add text editing or
+            // visual mode, revisit.
+            Motion::Right => Some(Msg::OpenSelectedPr),
+            Motion::Left => Some(Msg::Back),
+            // w/b/$/0 still unbound — quietly ignore.
             _ => None,
         },
         Action::Operate { .. } => None,

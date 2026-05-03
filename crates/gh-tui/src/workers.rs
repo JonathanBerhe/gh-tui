@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use gh_api::auth::{detect_auth, AuthOutcome};
 use gh_api::{
-    fetch_open_prs_page, fetch_pr_detail, fetch_pr_files, resolve_from_cwd, Client, EtagCache,
+    fetch_open_prs_page, fetch_pr_detail, fetch_pr_files, fetch_pr_review_threads,
+    resolve_from_cwd, Client, EtagCache,
 };
 use gh_core::{Cmd, Msg};
 use tokio::sync::{mpsc::Sender, OnceCell};
@@ -130,13 +131,24 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                         .await;
                     return;
                 };
-                let msg = match fetch_pr_files(client, &repo, number).await {
+                // Fetch files (REST) and review threads (GraphQL) in parallel.
+                // If files fail, surface the error; thread failure is degraded
+                // (we still show the diff, just without inline comments).
+                let files_fut = fetch_pr_files(client, &repo, number);
+                let threads_fut = fetch_pr_review_threads(client, &repo, number);
+                let (files_res, threads_res) = tokio::join!(files_fut, threads_fut);
+                let msg = match files_res {
                     Ok(files) => {
-                        let file_offsets = gh_render::file_line_offsets(&files);
+                        let threads = threads_res.unwrap_or_else(|e| {
+                            warn!(error = %e, "review threads fetch failed; rendering diff without inline comments");
+                            Vec::new()
+                        });
+                        let file_offsets = gh_render::file_line_offsets(&files, &threads);
                         Msg::DiffReady {
                             repo,
                             number,
                             files,
+                            threads,
                             file_offsets,
                         }
                     }

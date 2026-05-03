@@ -3,7 +3,7 @@
 //! Both columns share the same `scroll` offset (synchronised vertical
 //! scrolling).
 
-use gh_core::FilePatch;
+use gh_core::{FilePatch, ReviewThread};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -12,7 +12,13 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(files: &[FilePatch], scroll: u16, frame: &mut Frame<'_>, area: Rect) {
+pub fn draw(
+    files: &[FilePatch],
+    threads: &[ReviewThread],
+    scroll: u16,
+    frame: &mut Frame<'_>,
+    area: Rect,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -31,7 +37,7 @@ pub fn draw(files: &[FilePatch], scroll: u16, frame: &mut Frame<'_>, area: Rect)
         return;
     }
 
-    let rows = gh_render::render_diff_split(files);
+    let rows = gh_render::render_diff_split(files, threads);
     let (left_lines, right_lines): (Vec<Line<'static>>, Vec<Line<'static>>) =
         rows.into_iter().unzip();
 

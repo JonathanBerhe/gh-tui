@@ -48,7 +48,7 @@ fn bench_render_5k(c: &mut Criterion) {
     let files = synthetic_patch(5_000, 100);
     c.bench_function("render_diff_5k_lines", |b| {
         b.iter(|| {
-            let lines = render_diff(black_box(&files));
+            let lines = render_diff(black_box(&files), black_box(&[]));
             black_box(lines);
         });
     });
