@@ -12,6 +12,7 @@ description = "ratatui widgets and screen composition for gh-tui."
 gh-core = { path = "../gh-core" }
 gh-render = { path = "../gh-render" }
 gh-input = { path = "../gh-input" }
+chrono = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tracing = { workspace = true }

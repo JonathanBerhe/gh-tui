@@ -1,6 +1,7 @@
 //! PR list screen: a column-aligned table of open pull requests with an
 //! optional "loading more…" footer while the next page is in flight.
 
+use chrono::{DateTime, Utc};
 use gh_core::PrSummary;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,13 +12,12 @@ use ratatui::{
 };
 
 /// Column widths. `#N` fits 6-digit issue numbers (cli/cli is at ~13k);
-/// state badge is fixed; title takes the rest of the row; author and stats
-/// are right-sized for typical content.
+/// state badge is fixed; title takes the rest of the row; author and
+/// the relative-opened time are right-sized for typical content.
 const COL_NUMBER: u16 = 7;
 const COL_STATE: u16 = 6;
 const COL_AUTHOR: u16 = 22;
-const COL_STATS: u16 = 11;
-const COL_COMMENTS: u16 = 5;
+const COL_OPENED: u16 = 8;
 
 pub fn draw(
     items: &[PrSummary],
@@ -55,8 +55,7 @@ pub fn draw(
         Cell::from(""),
         Cell::from("TITLE"),
         Cell::from("AUTHOR"),
-        Cell::from("    +/-"),
-        Cell::from("  💬"),
+        Cell::from("OPENED"),
     ])
     .style(
         Style::default()
@@ -70,8 +69,7 @@ pub fn draw(
         Constraint::Length(COL_STATE),
         Constraint::Min(20),
         Constraint::Length(COL_AUTHOR),
-        Constraint::Length(COL_STATS),
-        Constraint::Length(COL_COMMENTS),
+        Constraint::Length(COL_OPENED),
     ];
 
     let rows: Vec<Row<'static>> = items.iter().map(render_row).collect();
@@ -135,19 +133,69 @@ fn render_row(p: &PrSummary) -> Row<'static> {
         Style::default().fg(Color::Cyan),
     )));
 
-    let stats = Cell::from(Line::from(vec![
-        Span::styled(
-            format!("+{}", p.additions),
-            Style::default().fg(Color::Green),
-        ),
-        Span::raw(" "),
-        Span::styled(format!("-{}", p.deletions), Style::default().fg(Color::Red)),
-    ]));
-
-    let comments = Cell::from(Line::from(Span::styled(
-        p.comments.to_string(),
+    // Note: GitHub's `/pulls` list endpoint does NOT return additions /
+    // deletions / comment counts (those land only on the per-PR detail
+    // fetch). We previously rendered `+0 -0` and `💬 0` for every row,
+    // which was misleading. We replaced those columns with the relative
+    // open time — which IS in the list response. A future GraphQL
+    // search-based list can re-introduce the diff stats with real data.
+    let opened = Cell::from(Line::from(Span::styled(
+        relative_age(p.created_at),
         Style::default().fg(Color::DarkGray),
     )));
 
-    Row::new(vec![number, state, title, author, stats, comments])
+    // One blank row between PRs gives the eye a place to land. Halves
+    // visible PRs in a fixed area but the user feedback was unanimous
+    // that the previous tight layout was hard to scan.
+    Row::new(vec![number, state, title, author, opened]).bottom_margin(1)
+}
+
+/// Compact relative duration (`3h`, `2d`, `5mo`, `1y`) suitable for a
+/// short table column. Future-dated timestamps (clock skew) clamp to
+/// `now`. We don't pluralise — the column is too narrow to spell it out
+/// and the convention matches `gh pr list`'s output.
+fn relative_age(then: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let dur = now.signed_duration_since(then);
+    let secs = dur.num_seconds().max(0);
+    let mins = secs / 60;
+    let hours = mins / 60;
+    let days = hours / 24;
+    if mins < 1 {
+        "now".to_string()
+    } else if mins < 60 {
+        format!("{mins}m")
+    } else if hours < 24 {
+        format!("{hours}h")
+    } else if days < 30 {
+        format!("{days}d")
+    } else if days < 365 {
+        format!("{}mo", days / 30)
+    } else {
+        format!("{}y", days / 365)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn relative_age_buckets() {
+        let now = Utc::now();
+        assert_eq!(relative_age(now), "now");
+        assert_eq!(relative_age(now - Duration::minutes(5)), "5m");
+        assert_eq!(relative_age(now - Duration::hours(3)), "3h");
+        assert_eq!(relative_age(now - Duration::days(2)), "2d");
+        assert_eq!(relative_age(now - Duration::days(60)), "2mo");
+        assert_eq!(relative_age(now - Duration::days(800)), "2y");
+    }
+
+    #[test]
+    fn relative_age_future_clamps_to_now() {
+        let future = Utc::now() + Duration::hours(1);
+        assert_eq!(relative_age(future), "now");
+    }
 }
