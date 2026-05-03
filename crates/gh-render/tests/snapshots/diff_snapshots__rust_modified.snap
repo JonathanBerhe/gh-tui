@@ -1,0 +1,16 @@
+---
+source: crates/gh-render/tests/diff_snapshots.rs
+expression: "flatten(&one_file_at(\"rust_modified\", \"src/count.rs\", PatchStatus::Modified,\n4, 2,))"
+---
+src/count.rs (modified)
++4 -2
+@@ -1,5 +1,7 @@
+ use std::collections::HashMap;
+ 
+-fn count(items: &[i32]) -> usize {
+-    items.len()
++fn count(items: &[i32]) -> u32 {
++    let mut n: u32 = 0;
++    for _ in items { n += 1; }
++    n
+ }

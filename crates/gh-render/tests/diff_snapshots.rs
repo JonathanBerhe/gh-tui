@@ -40,6 +40,24 @@ fn one_file(name: &str, status: PatchStatus, additions: u32, deletions: u32) -> 
     }]
 }
 
+fn one_file_at(
+    name: &str,
+    path: &str,
+    status: PatchStatus,
+    additions: u32,
+    deletions: u32,
+) -> Vec<FilePatch> {
+    vec![FilePatch {
+        path: path.into(),
+        previous_path: None,
+        status,
+        additions,
+        deletions,
+        patch: Some(fixture(name)),
+        blob_sha: "deadbeef".into(),
+    }]
+}
+
 #[test]
 fn simple() {
     insta::assert_snapshot!(flatten(&one_file("simple", PatchStatus::Modified, 1, 1)));
@@ -71,6 +89,53 @@ fn omitted_patch_renders_placeholder() {
         patch: None,
         blob_sha: "deadbeef".into(),
     }];
+    insta::assert_snapshot!(flatten(&files));
+}
+
+#[test]
+fn rust_modified() {
+    insta::assert_snapshot!(flatten(&one_file_at(
+        "rust_modified",
+        "src/count.rs",
+        PatchStatus::Modified,
+        4,
+        2,
+    )));
+}
+
+#[test]
+fn unknown_ext() {
+    insta::assert_snapshot!(flatten(&one_file_at(
+        "unknown_ext",
+        "Cargo.toml",
+        PatchStatus::Modified,
+        2,
+        1,
+    )));
+}
+
+#[test]
+fn mixed_lang() {
+    let files = vec![
+        FilePatch {
+            path: "src/count.rs".into(),
+            previous_path: None,
+            status: PatchStatus::Modified,
+            additions: 4,
+            deletions: 2,
+            patch: Some(fixture("rust_modified")),
+            blob_sha: "rs".into(),
+        },
+        FilePatch {
+            path: "Cargo.toml".into(),
+            previous_path: None,
+            status: PatchStatus::Modified,
+            additions: 2,
+            deletions: 1,
+            patch: Some(fixture("unknown_ext")),
+            blob_sha: "toml".into(),
+        },
+    ];
     insta::assert_snapshot!(flatten(&files));
 }
 
