@@ -27,6 +27,31 @@ use ratatui::{
 
 use crate::syntax::{self, Lang};
 
+/// Number of spaces a `\t` expands to in the diff viewer. Hardcoded for
+/// now; lifts to the theme/keymap config when that lands. Most Go and
+/// Rust toolchains pick 4; matches `git`'s default.
+const TAB_WIDTH: usize = 4;
+
+/// Replace every `\t` with [`TAB_WIDTH`] spaces. Terminals render tabs at
+/// inconsistent widths (8 by default, sometimes terminal-configured),
+/// which breaks visual alignment in a code-heavy view. Normalising once
+/// at the renderer entry means every downstream path — tree-sitter
+/// highlighter, `similar` word diff, ratatui spans — sees the same flat
+/// whitespace.
+pub(super) fn expand_tabs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch == '\t' {
+            for _ in 0..TAB_WIDTH {
+                out.push(' ');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Render a sequence of file patches into displayable lines.
 ///
 /// Per file, if [`syntax::detect`] returns a non-`Plain` language, the
@@ -52,19 +77,21 @@ fn render_file(file: &FilePatch, lines: &mut Vec<Line<'static>>) {
     lines.push(file_header(file));
     lines.push(file_stats(file));
 
-    let patch = match &file.patch {
+    let raw_patch = match &file.patch {
         Some(p) if !p.is_empty() => p,
         _ => {
             lines.push(diff_omitted());
             return;
         }
     };
+    // Normalise tabs once so tree-sitter, similar, and ratatui all agree.
+    let patch = expand_tabs(raw_patch);
 
     let lang = syntax::detect(&file.path);
     let highlighted = if matches!(lang, Lang::Plain) {
         None
     } else {
-        let after = reconstruct_after(patch);
+        let after = reconstruct_after(&patch);
         Some(syntax::highlight(lang, &after))
     };
 
@@ -206,17 +233,30 @@ pub(super) fn reconstruct_after(patch: &str) -> String {
 
 /// Cumulative line offsets pointing at each file's header in the rendered
 /// output. Used by the reducer to serve `{`/`}` jumps between files.
-///
-/// Cheap: walks `patch.lines()` once per file to count, never allocates a
-/// `Line` or `Span`. Workers call this on the message-passing path so the
-/// hot render path runs only inside the UI loop. The thread parameter is
-/// counted into the offsets so jumps remain accurate after pseudo-line
-/// injection.
-///
-/// Saturates at `u16::MAX`; jumps in diffs longer than 65535 lines will land
-/// at the final saturated offset rather than the file's true position.
 #[must_use]
 pub fn file_line_offsets(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<u16> {
+    file_line_layout(files, threads).0
+}
+
+/// Total rendered line count for the diff view. Used by the reducer to
+/// clamp `scroll` so `G` (jump-to-end) doesn't park the scroll value far
+/// past actual content length, leaving subsequent `k` presses no-ops.
+#[must_use]
+pub fn total_diff_lines(files: &[FilePatch], threads: &[ReviewThread]) -> u16 {
+    file_line_layout(files, threads).1
+}
+
+/// Cheap single-pass walker that produces both the per-file offset table
+/// and the total rendered line count. Walks `patch.lines()` once per
+/// file, never allocates a `Line` or `Span`. Workers call this on the
+/// message-passing path so the hot render path runs only inside the UI
+/// loop. Thread pseudo-lines are counted into both outputs so the
+/// reducer's section jumps and end-clamp remain accurate.
+///
+/// Saturates at `u16::MAX`; diffs longer than 65535 lines land at the
+/// saturated offset rather than the true position.
+#[must_use]
+pub fn file_line_layout(files: &[FilePatch], threads: &[ReviewThread]) -> (Vec<u16>, u16) {
     let mut offsets: Vec<u16> = Vec::with_capacity(files.len());
     let mut total: u32 = 0;
     for (i, file) in files.iter().enumerate() {
@@ -243,7 +283,7 @@ pub fn file_line_offsets(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<u
             .sum();
         total = total.saturating_add(thread_lines);
     }
-    offsets
+    (offsets, u16::try_from(total).unwrap_or(u16::MAX))
 }
 
 pub(super) fn file_header(file: &FilePatch) -> Line<'static> {
@@ -409,6 +449,49 @@ mod tests {
         // first file: header(1) + stats(1) + @@(1) + +x(1) = 4 lines, then
         // the inter-file blank brings us to 5, second file's header at 5.
         assert_eq!(offsets[1], 5);
+    }
+
+    #[test]
+    fn tabs_in_patch_expand_to_spaces() {
+        // Go-style tab-indented context line and addition. Both should
+        // render with leading spaces, not raw `\t` (terminals render tabs
+        // at inconsistent widths and break alignment).
+        let patch = "@@ -1,2 +1,2 @@\n\tcontext\n+\tnew";
+        let files = vec![FilePatch {
+            path: "main.go".into(),
+            previous_path: None,
+            status: PatchStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            patch: Some(patch.into()),
+            blob_sha: "x".into(),
+        }];
+        let lines = render(&files, &[]);
+        // No rendered Span content should contain a literal tab.
+        for line in &lines {
+            for span in &line.spans {
+                assert!(
+                    !span.content.contains('\t'),
+                    "tab leaked into rendered span: {:?}",
+                    span.content,
+                );
+            }
+        }
+        // The context line at idx 3 (after header/stats/@@) must contain
+        // 4 leading spaces from the expanded tab, then "context".
+        let ctx_text: String = lines[3].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            ctx_text.contains("    context"),
+            "expected 4-space-indented context, got {ctx_text:?}",
+        );
+    }
+
+    #[test]
+    fn expand_tabs_basic() {
+        assert_eq!(expand_tabs("\tfoo"), "    foo");
+        assert_eq!(expand_tabs("a\tb\tc"), "a    b    c");
+        assert_eq!(expand_tabs("no tabs here"), "no tabs here");
+        assert_eq!(expand_tabs(""), "");
     }
 
     #[test]

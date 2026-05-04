@@ -4,7 +4,7 @@ use crate::{
     auth::AuthState,
     cmd::Cmd,
     msg::{JumpDirection, Msg, SelectionJump},
-    state::{DiffViewMode, Screen, State},
+    state::{DiffViewMode, PrefetchedDiff, Screen, State},
 };
 
 /// Trigger an auto-fetch of the next page when the selection lands within
@@ -148,21 +148,8 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                         });
                     }
                 }
-                Screen::PrDetail { repo, detail, .. } => {
-                    let number = detail.number;
-                    let repo_ref = repo.clone();
-                    let prior = std::mem::replace(
-                        &mut state.screen,
-                        Screen::LoadingDiff {
-                            repo: repo_ref.clone(),
-                            number,
-                        },
-                    );
-                    state.nav_stack.push(prior);
-                    cmds.push(Cmd::FetchPrDiff {
-                        repo: repo_ref,
-                        number,
-                    });
+                Screen::PrDetail { .. } => {
+                    open_diff_from_pr_detail(&mut state, &mut cmds);
                 }
                 _ => {}
             }
@@ -172,13 +159,28 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             // responses (number mismatch or screen changed) drop silently.
             if let Screen::LoadingDetail { repo, number } = &state.screen {
                 if detail.number == *number {
-                    let review_offsets = compute_review_offsets(body_lines, detail.reviews.len());
+                    let n_reviews = detail.reviews.len();
+                    let review_offsets = compute_review_offsets(body_lines, n_reviews);
+                    let total_lines = total_pr_detail_lines(body_lines, n_reviews);
+                    let repo_clone = repo.clone();
+                    let pr_number = detail.number;
                     state.screen = Screen::PrDetail {
                         repo: repo.clone(),
                         detail,
                         scroll: 0,
+                        total_lines,
                         review_offsets,
+                        prefetched_diff: None,
                     };
+                    // Eagerly prefetch the diff in the background while the
+                    // user is reading the body. When it lands, the reducer's
+                    // `DiffReady` arm stashes it into `prefetched_diff`
+                    // (since by then state.screen is `PrDetail`, not the
+                    // `LoadingDiff` the arm normally consumes).
+                    cmds.push(Cmd::FetchPrDiff {
+                        repo: repo_clone,
+                        number: pr_number,
+                    });
                 }
             }
         }
@@ -193,23 +195,8 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             }
         }
         Msg::OpenDiff => {
-            // Only meaningful from PR detail. Snapshot the current screen
-            // onto the nav stack and transition to LoadingDiff.
-            if let Screen::PrDetail { repo, detail, .. } = &state.screen {
-                let number = detail.number;
-                let repo_ref = repo.clone();
-                let prior = std::mem::replace(
-                    &mut state.screen,
-                    Screen::LoadingDiff {
-                        repo: repo_ref.clone(),
-                        number,
-                    },
-                );
-                state.nav_stack.push(prior);
-                cmds.push(Cmd::FetchPrDiff {
-                    repo: repo_ref,
-                    number,
-                });
+            if matches!(state.screen, Screen::PrDetail { .. }) {
+                open_diff_from_pr_detail(&mut state, &mut cmds);
             }
         }
         Msg::DiffReady {
@@ -218,27 +205,43 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             files,
             threads,
             file_offsets,
-        } => {
-            // Only consume when we're still waiting for THIS diff. Stale
-            // responses (number mismatch or screen changed) drop silently.
-            if let Screen::LoadingDiff {
+            total_lines,
+        } => match &mut state.screen {
+            // Foreground path: user pressed Tab/`l` and is waiting on the
+            // LoadingDiff screen. Transition straight to DiffView.
+            Screen::LoadingDiff {
                 repo: cur_repo,
                 number: cur_n,
-            } = &state.screen
-            {
-                if *cur_repo == repo && *cur_n == number {
-                    state.screen = Screen::DiffView {
-                        repo,
-                        number,
-                        files,
-                        threads,
-                        scroll: 0,
-                        file_offsets,
-                        view_mode: DiffViewMode::default(),
-                    };
-                }
+            } if *cur_repo == repo && *cur_n == number => {
+                state.screen = Screen::DiffView {
+                    repo,
+                    number,
+                    files,
+                    threads,
+                    scroll: 0,
+                    total_lines,
+                    file_offsets,
+                    view_mode: DiffViewMode::default(),
+                };
             }
-        }
+            // Prefetch path: the user is still on PrDetail when the eager
+            // fetch lands. Stash it so the next OpenDiff is instant.
+            Screen::PrDetail {
+                repo: cur_repo,
+                detail,
+                prefetched_diff,
+                ..
+            } if *cur_repo == repo && detail.number == number => {
+                *prefetched_diff = Some(PrefetchedDiff {
+                    files,
+                    threads,
+                    file_offsets,
+                    total_lines,
+                });
+            }
+            // Stale (screen changed, repo/number mismatch). Drop silently.
+            _ => {}
+        },
         Msg::DiffFailed(reason) => {
             if matches!(state.screen, Screen::LoadingDiff { .. }) {
                 state.screen = Screen::Error {
@@ -288,9 +291,20 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     }
                 }
             }
-            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
+            Screen::PrDetail {
+                scroll,
+                total_lines,
+                ..
+            }
+            | Screen::DiffView {
+                scroll,
+                total_lines,
+                ..
+            } => {
+                let max = total_lines.saturating_sub(1);
                 let new = i32::from(*scroll).saturating_add(delta);
-                *scroll = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
+                let raw = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
+                *scroll = raw.min(max);
             }
             Screen::Welcome
             | Screen::Loading { .. }
@@ -307,10 +321,23 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     SelectionJump::Last => items.len() - 1,
                 };
             }
-            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
+            Screen::PrDetail {
+                scroll,
+                total_lines,
+                ..
+            }
+            | Screen::DiffView {
+                scroll,
+                total_lines,
+                ..
+            } => {
                 *scroll = match jump {
                     SelectionJump::First => 0,
-                    SelectionJump::Last => u16::MAX,
+                    // Clamp `G`/end to actual content length; using
+                    // `u16::MAX` here used to leave the user stuck at
+                    // 65535 needing thousands of `k` keypresses to come
+                    // back into view.
+                    SelectionJump::Last => total_lines.saturating_sub(1),
                 };
             }
             _ => {}
@@ -319,6 +346,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             Screen::PrDetail {
                 scroll,
                 review_offsets,
+                prefetched_diff: None,
                 ..
             } if !review_offsets.is_empty() => {
                 *scroll = next_section_scroll(*scroll, review_offsets, count, direction);
@@ -341,6 +369,65 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
 
 /// Compute the line offset of each review entry in the PR detail body view.
 /// Result is empty when there are no reviews.
+/// Transition from `Screen::PrDetail` to either `DiffView` (fast path,
+/// when a prefetched diff is in hand) or `LoadingDiff` (cold path,
+/// emitting `Cmd::FetchPrDiff`). Caller must guarantee `state.screen`
+/// is `PrDetail`; out-of-state callers are a no-op.
+fn open_diff_from_pr_detail(state: &mut State, cmds: &mut Vec<Cmd>) {
+    let Screen::PrDetail {
+        repo,
+        detail,
+        prefetched_diff,
+        ..
+    } = &mut state.screen
+    else {
+        return;
+    };
+    let number = detail.number;
+    let repo_ref = repo.clone();
+    let prefetched = prefetched_diff.take();
+    let next = match prefetched {
+        Some(diff) => Screen::DiffView {
+            repo: repo_ref.clone(),
+            number,
+            files: diff.files,
+            threads: diff.threads,
+            scroll: 0,
+            total_lines: diff.total_lines,
+            file_offsets: diff.file_offsets,
+            view_mode: DiffViewMode::default(),
+        },
+        None => Screen::LoadingDiff {
+            repo: repo_ref.clone(),
+            number,
+        },
+    };
+    let prior = std::mem::replace(&mut state.screen, next);
+    state.nav_stack.push(prior);
+    // Only emit a fetch command on the cold path; the prefetched payload
+    // is already in `DiffView`.
+    if matches!(state.screen, Screen::LoadingDiff { .. }) {
+        cmds.push(Cmd::FetchPrDiff {
+            repo: repo_ref,
+            number,
+        });
+    }
+}
+
+/// Total rendered line count of the PR detail body + reviews block.
+/// Used to clamp `scroll` so end-jump and motion deltas stay in bounds.
+fn total_pr_detail_lines(body_lines: u16, n_reviews: usize) -> u16 {
+    if n_reviews == 0 {
+        return body_lines;
+    }
+    let block_total = u16::try_from(n_reviews)
+        .unwrap_or(u16::MAX)
+        .saturating_mul(REVIEW_BLOCK_HEIGHT);
+    body_lines
+        .saturating_add(REVIEWS_HEADER_OFFSET)
+        .saturating_add(block_total)
+}
+
 fn compute_review_offsets(body_lines: u16, n_reviews: usize) -> Vec<u16> {
     if n_reviews == 0 {
         return Vec::new();
@@ -903,18 +990,145 @@ mod tests {
             }],
             ..State::default()
         };
-        let (s2, _) = reduce(
+        let (s2, cmds) = reduce(
             s,
             Msg::PrDetailReady {
                 detail: pr_detail(7),
                 body_lines: 0,
             },
         );
-        let Screen::PrDetail { detail, scroll, .. } = s2.screen else {
+        let Screen::PrDetail {
+            detail,
+            scroll,
+            prefetched_diff,
+            ..
+        } = s2.screen
+        else {
             panic!("expected PrDetail");
         };
         assert_eq!(detail.number, 7);
         assert_eq!(scroll, 0);
+        assert!(prefetched_diff.is_none(), "prefetch starts empty");
+        // Phase 6 PR #1: PrDetailReady eagerly emits the diff fetch so
+        // pressing Tab/`l` later finds the result already in hand.
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::FetchPrDiff { number: 7, .. })),
+            "expected eager diff prefetch, got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn diff_ready_during_pr_detail_stashes_into_prefetched_diff() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 7,
+                files: vec![file_patch("a.rs")],
+                threads: Vec::new(),
+                file_offsets: vec![0],
+                total_lines: 0,
+            },
+        );
+        let Screen::PrDetail {
+            prefetched_diff, ..
+        } = s2.screen
+        else {
+            panic!("expected PrDetail (prefetch arrived in background)");
+        };
+        let stash = prefetched_diff.expect("prefetched diff should be stashed");
+        assert_eq!(stash.files.len(), 1);
+        assert_eq!(stash.file_offsets, vec![0]);
+    }
+
+    #[test]
+    fn diff_ready_during_pr_detail_for_stale_number_is_dropped() {
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(
+            s,
+            Msg::DiffReady {
+                repo: repo(),
+                number: 99,
+                files: vec![file_patch("x.rs")],
+                threads: Vec::new(),
+                file_offsets: vec![0],
+                total_lines: 0,
+            },
+        );
+        let Screen::PrDetail {
+            prefetched_diff, ..
+        } = s2.screen
+        else {
+            panic!("expected PrDetail");
+        };
+        assert!(
+            prefetched_diff.is_none(),
+            "stale prefetch (number mismatch) must be dropped"
+        );
+    }
+
+    #[test]
+    fn open_diff_with_prefetched_diff_skips_loading_diff() {
+        let prefetched = PrefetchedDiff {
+            files: vec![file_patch("a.rs")],
+            threads: Vec::new(),
+            file_offsets: vec![0],
+            total_lines: 0,
+        };
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: Some(prefetched),
+            },
+            ..State::default()
+        };
+        let (s2, cmds) = reduce(s, Msg::OpenDiff);
+        // Fast path: straight to DiffView with the prefetched payload,
+        // no LoadingDiff flicker, no fetch command emitted.
+        assert!(
+            matches!(s2.screen, Screen::DiffView { number: 7, .. }),
+            "expected DiffView (skipped LoadingDiff), got {:?}",
+            s2.screen
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Cmd::FetchPrDiff { .. })),
+            "fast path must not re-fetch; got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn open_diff_without_prefetch_takes_loading_path() {
+        let (s2, cmds) = reduce(pr_detail_state(7), Msg::OpenDiff);
+        // Cold path: prefetch is None (e.g. it's still in flight) so we
+        // fall back to LoadingDiff and emit FetchPrDiff.
+        assert!(matches!(s2.screen, Screen::LoadingDiff { number: 7, .. }));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::FetchPrDiff { .. })));
     }
 
     #[test]
@@ -982,6 +1196,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 5,
                 review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             nav_stack: vec![prior],
             ..State::default()
@@ -1046,6 +1262,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 5,
                 review_offsets: Vec::new(),
+                total_lines: 100,
+                prefetched_diff: None,
             },
             ..State::default()
         };
@@ -1064,6 +1282,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             ..State::default()
         };
@@ -1082,6 +1302,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 42,
                 review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             ..State::default()
         };
@@ -1099,6 +1321,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: compute_review_offsets(10, n_reviews),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             ..State::default()
         }
@@ -1117,6 +1341,7 @@ mod tests {
         let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = s2.screen
         else {
@@ -1138,6 +1363,7 @@ mod tests {
         let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = s2.screen
         else {
@@ -1152,6 +1378,7 @@ mod tests {
         if let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = &mut s.screen
         {
@@ -1167,6 +1394,7 @@ mod tests {
         let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = s2.screen
         else {
@@ -1181,6 +1409,7 @@ mod tests {
         if let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = &mut s.screen
         {
@@ -1196,6 +1425,7 @@ mod tests {
         let Screen::PrDetail {
             scroll,
             review_offsets,
+            prefetched_diff: None,
             ..
         } = s2.screen
         else {
@@ -1221,13 +1451,18 @@ mod tests {
     }
 
     #[test]
-    fn body_scroll_jump_last_sets_scroll_to_u16_max() {
+    fn body_scroll_jump_last_clamps_to_total_lines_minus_one() {
+        // `G` (DocEnd) used to set scroll = u16::MAX which left the user
+        // stuck 65k presses past the content end. Now it clamps to the
+        // real bottom: total_lines.saturating_sub(1).
         let s = State {
             screen: Screen::PrDetail {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 50,
+                prefetched_diff: None,
             },
             ..State::default()
         };
@@ -1235,7 +1470,52 @@ mod tests {
         let Screen::PrDetail { scroll, .. } = s2.screen else {
             panic!("expected PrDetail")
         };
-        assert_eq!(scroll, u16::MAX);
+        assert_eq!(scroll, 49);
+    }
+
+    #[test]
+    fn body_scroll_after_jump_last_can_step_back_up() {
+        // Regression: after the clamp fix, a single `k` after `G` actually
+        // moves up by 1 (was previously stuck near u16::MAX).
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 50,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionJump(SelectionJump::Last));
+        let (s3, _) = reduce(s2, Msg::SelectionDelta(-1));
+        let Screen::PrDetail { scroll, .. } = s3.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 48);
+    }
+
+    #[test]
+    fn body_scroll_delta_clamps_to_total_lines() {
+        // A large positive delta clamps to total_lines - 1 (was previously
+        // allowed to drift up to u16::MAX).
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 50,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(1000));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 49);
     }
 
     #[test]
@@ -1246,6 +1526,8 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             ..State::default()
         };
@@ -1279,6 +1561,8 @@ mod tests {
                 detail: pr_detail(number),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
+                prefetched_diff: None,
             },
             ..State::default()
         }
@@ -1330,6 +1614,7 @@ mod tests {
                 number: 7,
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 file_offsets: vec![0, 12],
+                total_lines: 0,
                 threads: Vec::new(),
             },
         );
@@ -1363,6 +1648,7 @@ mod tests {
                 number: 99,
                 files: vec![file_patch("x.rs")],
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
             },
         );
@@ -1396,6 +1682,7 @@ mod tests {
                 files: vec![file_patch("src/foo.rs")],
                 threads: vec![thread.clone()],
                 file_offsets: vec![0],
+                total_lines: 0,
             },
         );
         let Screen::DiffView { threads, .. } = s2.screen else {
@@ -1411,6 +1698,8 @@ mod tests {
             detail: pr_detail(7),
             scroll: 0,
             review_offsets: Vec::new(),
+            total_lines: 0,
+            prefetched_diff: None,
         };
         let s = State {
             screen: Screen::LoadingDiff {
@@ -1432,6 +1721,8 @@ mod tests {
             detail: pr_detail(7),
             scroll: 0,
             review_offsets: Vec::new(),
+            total_lines: 0,
+            prefetched_diff: None,
         };
         let s = State {
             screen: Screen::DiffView {
@@ -1440,6 +1731,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1460,6 +1752,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                total_lines: 100,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1481,6 +1774,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1502,6 +1796,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
                 scroll: 0,
                 file_offsets: vec![0, 10, 20],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1529,6 +1824,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
@@ -1547,6 +1843,7 @@ mod tests {
                     files: vec![file_patch("a.rs")],
                     scroll: 0,
                     file_offsets: vec![0],
+                    total_lines: 0,
                     threads: Vec::new(),
                     view_mode,
                 },
@@ -1579,6 +1876,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 scroll: 42,
                 file_offsets: vec![0, 30],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
@@ -1608,6 +1906,7 @@ mod tests {
                 files: vec![],
                 scroll: 0,
                 file_offsets: vec![],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },

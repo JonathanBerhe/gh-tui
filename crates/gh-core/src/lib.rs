@@ -24,4 +24,4 @@ pub use pulls::{
 };
 pub use rate_limit::{RateLimit, Tier};
 pub use reducer::{initial_commands, reduce};
-pub use state::{DiffViewMode, Mode, Screen, State};
+pub use state::{DiffViewMode, Mode, PrefetchedDiff, Screen, State};

@@ -18,6 +18,7 @@ pub fn draw(
     files: &[FilePatch],
     threads: &[ReviewThread],
     scroll: u16,
+    total_lines: u16,
     view_mode: DiffViewMode,
     frame: &mut Frame<'_>,
     area: Rect,
@@ -37,12 +38,19 @@ pub fn draw(
     frame.render_widget(title_line(files.len(), threads.len(), view_mode), chunks[0]);
     frame.render_widget(summary_line(files), chunks[1]);
     frame.render_widget(separator(), chunks[3]);
+
+    // Carve a 1-column gutter on the right for the scrollbar.
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(chunks[5]);
     match view_mode {
         DiffViewMode::Unified => {
-            frame.render_widget(unified_body(files, threads, scroll), chunks[5]);
+            frame.render_widget(unified_body(files, threads, scroll), body_chunks[0]);
         }
-        DiffViewMode::Split => split::draw(files, threads, scroll, frame, chunks[5]),
+        DiffViewMode::Split => split::draw(files, threads, scroll, frame, body_chunks[0]),
     }
+    crate::screens::pr_detail::render_scrollbar(scroll, total_lines, body_chunks[1], frame);
 }
 
 fn title_line(

@@ -60,6 +60,9 @@ pub enum Msg {
         files: Vec<FilePatch>,
         threads: Vec<ReviewThread>,
         file_offsets: Vec<u16>,
+        /// Total rendered line count, used by the reducer to clamp
+        /// `scroll` so `G` and motion deltas behave correctly.
+        total_lines: u16,
     },
     /// Per-file diff fetch failed.
     DiffFailed(String),

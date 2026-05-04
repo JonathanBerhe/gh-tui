@@ -143,13 +143,15 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                             warn!(error = %e, "review threads fetch failed; rendering diff without inline comments");
                             Vec::new()
                         });
-                        let file_offsets = gh_render::file_line_offsets(&files, &threads);
+                        let (file_offsets, total_lines) =
+                            gh_render::diff::file_line_layout(&files, &threads);
                         Msg::DiffReady {
                             repo,
                             number,
                             files,
                             threads,
                             file_offsets,
+                            total_lines,
                         }
                     }
                     Err(e) => Msg::DiffFailed(e.to_string()),

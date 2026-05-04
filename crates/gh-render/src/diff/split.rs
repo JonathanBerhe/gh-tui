@@ -50,7 +50,7 @@ fn render_file(file: &FilePatch, rows: &mut Vec<(Line<'static>, Line<'static>)>)
     let stats = file_stats(file);
     rows.push((stats.clone(), stats));
 
-    let patch = match &file.patch {
+    let raw_patch = match &file.patch {
         Some(p) if !p.is_empty() => p,
         _ => {
             let placeholder = diff_omitted();
@@ -58,12 +58,14 @@ fn render_file(file: &FilePatch, rows: &mut Vec<(Line<'static>, Line<'static>)>)
             return;
         }
     };
+    // Same tab-normalisation as the unified path.
+    let patch = super::expand_tabs(raw_patch);
 
     let lang = syntax::detect(&file.path);
     let highlighted = if matches!(lang, Lang::Plain) {
         None
     } else {
-        let after = reconstruct_after(patch);
+        let after = reconstruct_after(&patch);
         Some(syntax::highlight(lang, &after))
     };
 

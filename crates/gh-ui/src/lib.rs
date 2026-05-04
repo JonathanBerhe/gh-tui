@@ -41,8 +41,13 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
         Screen::LoadingDetail { repo, number } => {
             draw_loading(&format!("{} #{number}", repo.slug()), frame, chunks[0]);
         }
-        Screen::PrDetail { detail, scroll, .. } => {
-            screens::pr_detail::draw(detail, *scroll, frame, chunks[0]);
+        Screen::PrDetail {
+            detail,
+            scroll,
+            total_lines,
+            ..
+        } => {
+            screens::pr_detail::draw(detail, *scroll, *total_lines, frame, chunks[0]);
         }
         Screen::LoadingDiff { repo, number } => {
             draw_loading(&format!("{} #{number} diff", repo.slug()), frame, chunks[0]);
@@ -51,10 +56,19 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
             files,
             threads,
             scroll,
+            total_lines,
             view_mode,
             ..
         } => {
-            screens::diff_view::draw(files, threads, *scroll, *view_mode, frame, chunks[0]);
+            screens::diff_view::draw(
+                files,
+                threads,
+                *scroll,
+                *total_lines,
+                *view_mode,
+                frame,
+                chunks[0],
+            );
         }
         Screen::Error { message, hint } => {
             screens::error::draw(message, hint.as_deref(), frame, chunks[0]);
