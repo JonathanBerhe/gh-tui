@@ -9,11 +9,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
-pub fn draw(detail: &PrDetail, scroll: u16, frame: &mut Frame<'_>, area: Rect) {
+pub fn draw(detail: &PrDetail, scroll: u16, total_lines: u16, frame: &mut Frame<'_>, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -29,7 +29,34 @@ pub fn draw(detail: &PrDetail, scroll: u16, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(title_line(detail), chunks[0]);
     frame.render_widget(meta_line(detail), chunks[1]);
     frame.render_widget(separator(), chunks[3]);
-    frame.render_widget(body_and_reviews(detail, scroll), chunks[5]);
+
+    // Body sits in a horizontal split: the paragraph fills all but the
+    // last column, which carries a vertical scrollbar tracking the
+    // current scroll position vs. total content length.
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(chunks[5]);
+    frame.render_widget(body_and_reviews(detail, scroll), body_chunks[0]);
+    render_scrollbar(scroll, total_lines, body_chunks[1], frame);
+}
+
+/// Vertical scrollbar on the right edge. `position` is the current scroll
+/// (top-line index); `content_length` is the rendered total. Hidden when
+/// content fits in viewport (length 0/1).
+pub(super) fn render_scrollbar(scroll: u16, total_lines: u16, area: Rect, frame: &mut Frame<'_>) {
+    if total_lines <= 1 {
+        return;
+    }
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"))
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .style(Style::default().fg(Color::DarkGray))
+        .thumb_style(Style::default().fg(Color::Cyan));
+    let mut state = ScrollbarState::new(usize::from(total_lines)).position(usize::from(scroll));
+    frame.render_stateful_widget(scrollbar, area, &mut state);
 }
 
 fn title_line(d: &PrDetail) -> Paragraph<'static> {

@@ -34,6 +34,7 @@ pub struct PrefetchedDiff {
     pub files: Vec<FilePatch>,
     pub threads: Vec<ReviewThread>,
     pub file_offsets: Vec<u16>,
+    pub total_lines: u16,
 }
 
 /// How the diff body is laid out when [`Screen::DiffView`] is active.
@@ -59,6 +60,11 @@ impl DiffViewMode {
 }
 
 /// What the body of the screen is currently showing.
+// `large_enum_variant`: `PrDetail` and `DiffView` are the heaviest variants
+// (they own the rendered payloads). Boxing them would force a heap deref
+// on every render of those screens, which sit on the hot path. We pay a
+// few hundred bytes of stack instead.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Screen {
     /// Pre-bootstrap placeholder (Phase 1's body).
@@ -94,6 +100,10 @@ pub enum Screen {
         repo: RepoRef,
         detail: PrDetail,
         scroll: u16,
+        /// Total rendered line count of the body + reviews block. Used by
+        /// the reducer to clamp `scroll` so `G` (DocEnd) and motion deltas
+        /// don't park the value far past actual content length.
+        total_lines: u16,
         review_offsets: Vec<u16>,
         prefetched_diff: Option<PrefetchedDiff>,
     },
@@ -109,6 +119,10 @@ pub enum Screen {
         files: Vec<FilePatch>,
         threads: Vec<ReviewThread>,
         scroll: u16,
+        /// Total rendered line count of the diff body. Same role as
+        /// `Screen::PrDetail::total_lines` — keeps `G` and motion deltas
+        /// honest so jumping to the end and back works in O(1) keypresses.
+        total_lines: u16,
         file_offsets: Vec<u16>,
         view_mode: DiffViewMode,
     },

@@ -233,17 +233,30 @@ pub(super) fn reconstruct_after(patch: &str) -> String {
 
 /// Cumulative line offsets pointing at each file's header in the rendered
 /// output. Used by the reducer to serve `{`/`}` jumps between files.
-///
-/// Cheap: walks `patch.lines()` once per file to count, never allocates a
-/// `Line` or `Span`. Workers call this on the message-passing path so the
-/// hot render path runs only inside the UI loop. The thread parameter is
-/// counted into the offsets so jumps remain accurate after pseudo-line
-/// injection.
-///
-/// Saturates at `u16::MAX`; jumps in diffs longer than 65535 lines will land
-/// at the final saturated offset rather than the file's true position.
 #[must_use]
 pub fn file_line_offsets(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<u16> {
+    file_line_layout(files, threads).0
+}
+
+/// Total rendered line count for the diff view. Used by the reducer to
+/// clamp `scroll` so `G` (jump-to-end) doesn't park the scroll value far
+/// past actual content length, leaving subsequent `k` presses no-ops.
+#[must_use]
+pub fn total_diff_lines(files: &[FilePatch], threads: &[ReviewThread]) -> u16 {
+    file_line_layout(files, threads).1
+}
+
+/// Cheap single-pass walker that produces both the per-file offset table
+/// and the total rendered line count. Walks `patch.lines()` once per
+/// file, never allocates a `Line` or `Span`. Workers call this on the
+/// message-passing path so the hot render path runs only inside the UI
+/// loop. Thread pseudo-lines are counted into both outputs so the
+/// reducer's section jumps and end-clamp remain accurate.
+///
+/// Saturates at `u16::MAX`; diffs longer than 65535 lines land at the
+/// saturated offset rather than the true position.
+#[must_use]
+pub fn file_line_layout(files: &[FilePatch], threads: &[ReviewThread]) -> (Vec<u16>, u16) {
     let mut offsets: Vec<u16> = Vec::with_capacity(files.len());
     let mut total: u32 = 0;
     for (i, file) in files.iter().enumerate() {
@@ -270,7 +283,7 @@ pub fn file_line_offsets(files: &[FilePatch], threads: &[ReviewThread]) -> Vec<u
             .sum();
         total = total.saturating_add(thread_lines);
     }
-    offsets
+    (offsets, u16::try_from(total).unwrap_or(u16::MAX))
 }
 
 pub(super) fn file_header(file: &FilePatch) -> Line<'static> {

@@ -159,13 +159,16 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             // responses (number mismatch or screen changed) drop silently.
             if let Screen::LoadingDetail { repo, number } = &state.screen {
                 if detail.number == *number {
-                    let review_offsets = compute_review_offsets(body_lines, detail.reviews.len());
+                    let n_reviews = detail.reviews.len();
+                    let review_offsets = compute_review_offsets(body_lines, n_reviews);
+                    let total_lines = total_pr_detail_lines(body_lines, n_reviews);
                     let repo_clone = repo.clone();
                     let pr_number = detail.number;
                     state.screen = Screen::PrDetail {
                         repo: repo.clone(),
                         detail,
                         scroll: 0,
+                        total_lines,
                         review_offsets,
                         prefetched_diff: None,
                     };
@@ -202,6 +205,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             files,
             threads,
             file_offsets,
+            total_lines,
         } => match &mut state.screen {
             // Foreground path: user pressed Tab/`l` and is waiting on the
             // LoadingDiff screen. Transition straight to DiffView.
@@ -215,6 +219,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     files,
                     threads,
                     scroll: 0,
+                    total_lines,
                     file_offsets,
                     view_mode: DiffViewMode::default(),
                 };
@@ -231,6 +236,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     files,
                     threads,
                     file_offsets,
+                    total_lines,
                 });
             }
             // Stale (screen changed, repo/number mismatch). Drop silently.
@@ -285,9 +291,20 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     }
                 }
             }
-            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
+            Screen::PrDetail {
+                scroll,
+                total_lines,
+                ..
+            }
+            | Screen::DiffView {
+                scroll,
+                total_lines,
+                ..
+            } => {
+                let max = total_lines.saturating_sub(1);
                 let new = i32::from(*scroll).saturating_add(delta);
-                *scroll = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
+                let raw = u16::try_from(new.max(0)).unwrap_or(u16::MAX);
+                *scroll = raw.min(max);
             }
             Screen::Welcome
             | Screen::Loading { .. }
@@ -304,10 +321,23 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     SelectionJump::Last => items.len() - 1,
                 };
             }
-            Screen::PrDetail { scroll, .. } | Screen::DiffView { scroll, .. } => {
+            Screen::PrDetail {
+                scroll,
+                total_lines,
+                ..
+            }
+            | Screen::DiffView {
+                scroll,
+                total_lines,
+                ..
+            } => {
                 *scroll = match jump {
                     SelectionJump::First => 0,
-                    SelectionJump::Last => u16::MAX,
+                    // Clamp `G`/end to actual content length; using
+                    // `u16::MAX` here used to leave the user stuck at
+                    // 65535 needing thousands of `k` keypresses to come
+                    // back into view.
+                    SelectionJump::Last => total_lines.saturating_sub(1),
                 };
             }
             _ => {}
@@ -363,6 +393,7 @@ fn open_diff_from_pr_detail(state: &mut State, cmds: &mut Vec<Cmd>) {
             files: diff.files,
             threads: diff.threads,
             scroll: 0,
+            total_lines: diff.total_lines,
             file_offsets: diff.file_offsets,
             view_mode: DiffViewMode::default(),
         },
@@ -381,6 +412,20 @@ fn open_diff_from_pr_detail(state: &mut State, cmds: &mut Vec<Cmd>) {
             number,
         });
     }
+}
+
+/// Total rendered line count of the PR detail body + reviews block.
+/// Used to clamp `scroll` so end-jump and motion deltas stay in bounds.
+fn total_pr_detail_lines(body_lines: u16, n_reviews: usize) -> u16 {
+    if n_reviews == 0 {
+        return body_lines;
+    }
+    let block_total = u16::try_from(n_reviews)
+        .unwrap_or(u16::MAX)
+        .saturating_mul(REVIEW_BLOCK_HEIGHT);
+    body_lines
+        .saturating_add(REVIEWS_HEADER_OFFSET)
+        .saturating_add(block_total)
 }
 
 fn compute_review_offsets(body_lines: u16, n_reviews: usize) -> Vec<u16> {
@@ -981,6 +1026,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -993,6 +1039,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 threads: Vec::new(),
                 file_offsets: vec![0],
+                total_lines: 0,
             },
         );
         let Screen::PrDetail {
@@ -1014,6 +1061,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1026,6 +1074,7 @@ mod tests {
                 files: vec![file_patch("x.rs")],
                 threads: Vec::new(),
                 file_offsets: vec![0],
+                total_lines: 0,
             },
         );
         let Screen::PrDetail {
@@ -1046,6 +1095,7 @@ mod tests {
             files: vec![file_patch("a.rs")],
             threads: Vec::new(),
             file_offsets: vec![0],
+            total_lines: 0,
         };
         let s = State {
             screen: Screen::PrDetail {
@@ -1053,6 +1103,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: Some(prefetched),
             },
             ..State::default()
@@ -1145,6 +1196,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 5,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             nav_stack: vec![prior],
@@ -1210,6 +1262,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 5,
                 review_offsets: Vec::new(),
+                total_lines: 100,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1229,6 +1282,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1248,6 +1302,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 42,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1266,6 +1321,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: compute_review_offsets(10, n_reviews),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1395,13 +1451,17 @@ mod tests {
     }
 
     #[test]
-    fn body_scroll_jump_last_sets_scroll_to_u16_max() {
+    fn body_scroll_jump_last_clamps_to_total_lines_minus_one() {
+        // `G` (DocEnd) used to set scroll = u16::MAX which left the user
+        // stuck 65k presses past the content end. Now it clamps to the
+        // real bottom: total_lines.saturating_sub(1).
         let s = State {
             screen: Screen::PrDetail {
                 repo: repo(),
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 50,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1410,7 +1470,52 @@ mod tests {
         let Screen::PrDetail { scroll, .. } = s2.screen else {
             panic!("expected PrDetail")
         };
-        assert_eq!(scroll, u16::MAX);
+        assert_eq!(scroll, 49);
+    }
+
+    #[test]
+    fn body_scroll_after_jump_last_can_step_back_up() {
+        // Regression: after the clamp fix, a single `k` after `G` actually
+        // moves up by 1 (was previously stuck near u16::MAX).
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 50,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionJump(SelectionJump::Last));
+        let (s3, _) = reduce(s2, Msg::SelectionDelta(-1));
+        let Screen::PrDetail { scroll, .. } = s3.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 48);
+    }
+
+    #[test]
+    fn body_scroll_delta_clamps_to_total_lines() {
+        // A large positive delta clamps to total_lines - 1 (was previously
+        // allowed to drift up to u16::MAX).
+        let s = State {
+            screen: Screen::PrDetail {
+                repo: repo(),
+                detail: pr_detail(7),
+                scroll: 0,
+                review_offsets: Vec::new(),
+                total_lines: 50,
+                prefetched_diff: None,
+            },
+            ..State::default()
+        };
+        let (s2, _) = reduce(s, Msg::SelectionDelta(1000));
+        let Screen::PrDetail { scroll, .. } = s2.screen else {
+            panic!("expected PrDetail")
+        };
+        assert_eq!(scroll, 49);
     }
 
     #[test]
@@ -1421,6 +1526,7 @@ mod tests {
                 detail: pr_detail(7),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1455,6 +1561,7 @@ mod tests {
                 detail: pr_detail(number),
                 scroll: 0,
                 review_offsets: Vec::new(),
+                total_lines: 0,
                 prefetched_diff: None,
             },
             ..State::default()
@@ -1507,6 +1614,7 @@ mod tests {
                 number: 7,
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 file_offsets: vec![0, 12],
+                total_lines: 0,
                 threads: Vec::new(),
             },
         );
@@ -1540,6 +1648,7 @@ mod tests {
                 number: 99,
                 files: vec![file_patch("x.rs")],
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
             },
         );
@@ -1573,6 +1682,7 @@ mod tests {
                 files: vec![file_patch("src/foo.rs")],
                 threads: vec![thread.clone()],
                 file_offsets: vec![0],
+                total_lines: 0,
             },
         );
         let Screen::DiffView { threads, .. } = s2.screen else {
@@ -1588,6 +1698,7 @@ mod tests {
             detail: pr_detail(7),
             scroll: 0,
             review_offsets: Vec::new(),
+            total_lines: 0,
             prefetched_diff: None,
         };
         let s = State {
@@ -1610,6 +1721,7 @@ mod tests {
             detail: pr_detail(7),
             scroll: 0,
             review_offsets: Vec::new(),
+            total_lines: 0,
             prefetched_diff: None,
         };
         let s = State {
@@ -1619,6 +1731,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1639,6 +1752,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 5,
                 file_offsets: vec![0],
+                total_lines: 100,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1660,6 +1774,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1681,6 +1796,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs"), file_patch("c.rs")],
                 scroll: 0,
                 file_offsets: vec![0, 10, 20],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
@@ -1708,6 +1824,7 @@ mod tests {
                 files: vec![file_patch("a.rs")],
                 scroll: 0,
                 file_offsets: vec![0],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
@@ -1726,6 +1843,7 @@ mod tests {
                     files: vec![file_patch("a.rs")],
                     scroll: 0,
                     file_offsets: vec![0],
+                    total_lines: 0,
                     threads: Vec::new(),
                     view_mode,
                 },
@@ -1758,6 +1876,7 @@ mod tests {
                 files: vec![file_patch("a.rs"), file_patch("b.rs")],
                 scroll: 42,
                 file_offsets: vec![0, 30],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::Unified,
             },
@@ -1787,6 +1906,7 @@ mod tests {
                 files: vec![],
                 scroll: 0,
                 file_offsets: vec![],
+                total_lines: 0,
                 threads: Vec::new(),
                 view_mode: DiffViewMode::default(),
             },
