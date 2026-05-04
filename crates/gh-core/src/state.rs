@@ -25,6 +25,17 @@ impl Mode {
     }
 }
 
+/// Diff data prefetched while the user was on the PR detail screen.
+/// Mirrors the payload of `Msg::DiffReady` so the reducer can fold it
+/// directly into a `Screen::DiffView` when the user finally enters the
+/// diff view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefetchedDiff {
+    pub files: Vec<FilePatch>,
+    pub threads: Vec<ReviewThread>,
+    pub file_offsets: Vec<u16>,
+}
+
 /// How the diff body is laid out when [`Screen::DiffView`] is active.
 /// `Unified` is the default vim/git layout; `Split` shows pre-image on
 /// the left and post-image on the right.
@@ -73,11 +84,18 @@ pub enum Screen {
     /// PR detail rendered. `scroll` is in logical-line units; `review_offsets`
     /// is the pre-computed line offset of each review entry, used by `{`/`}`
     /// to jump between reviews.
+    ///
+    /// `prefetched_diff` carries a diff that was eagerly fetched in the
+    /// background while the user was reading the body. When the user
+    /// finally presses Tab/`l`, the reducer skips the `LoadingDiff`
+    /// flicker and transitions straight to `DiffView`. `None` means
+    /// either the prefetch is still in flight or it failed silently.
     PrDetail {
         repo: RepoRef,
         detail: PrDetail,
         scroll: u16,
         review_offsets: Vec<u16>,
+        prefetched_diff: Option<PrefetchedDiff>,
     },
     /// Waiting for the per-file diff (REST `/pulls/{n}/files`) response.
     LoadingDiff { repo: RepoRef, number: u64 },
