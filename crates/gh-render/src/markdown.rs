@@ -1,18 +1,59 @@
-//! Markdown → `Vec<Line<'static>>` renderer for the PR detail body.
+//! Markdown renderer for the PR detail body.
 //!
-//! Handles the subset GitHub PR descriptions actually use: paragraphs,
-//! headings, bold/italic/strikethrough, inline code, fenced code blocks,
-//! lists (bulleted + ordered, two-deep), blockquotes, links, images, and
-//! horizontal rules.
+//! Two output flavours:
 //!
-//! Image and Mermaid blocks are replaced by short text placeholders;
-//! Phase 6 will hoist them as separate widget placements.
+//! - [`render`] returns a flat `Vec<Line<'static>>` ready for a single
+//!   `Paragraph` widget. Image and Mermaid blocks render as inline text
+//!   placeholders (`[image: alt]`, `[mermaid diagram (N lines)]`).
+//! - [`render_chunks`] returns a typed `Vec<BodyChunk>`. Image and Mermaid
+//!   blocks are surfaced as their own variants so the UI layer can give
+//!   them their own rect (a `ratatui-image` widget for images, an
+//!   `mmdc`-rendered PNG for Mermaid). Text runs between non-text blocks
+//!   are coalesced into single `BodyChunk::Text` chunks.
+//!
+//! Both functions accept the same input and walk the same `pulldown-cmark`
+//! parser; the chunked path just additionally tracks chunk boundaries.
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+
+/// A typed segment of a rendered markdown body.
+///
+/// Text chunks carry the styled lines produced by the prose path. Image
+/// and Mermaid chunks carry the source metadata so the UI can later
+/// substitute a widget. PR #2 of Phase 6 lays the groundwork — image and
+/// mermaid still render as text placeholders for now; PR #3 swaps the
+/// `Image` variant for a `ratatui-image` widget and PR #4 does the same
+/// for `Mermaid` via `mmdc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyChunk {
+    /// One or more rendered text lines. Multiple consecutive non-image
+    /// non-mermaid markdown elements are coalesced into a single chunk so
+    /// callers don't have to stitch them back together.
+    Text(Vec<Line<'static>>),
+    /// Image link from `![alt](url)`. Still renders as `[image: alt]`
+    /// text in the v1 fallback.
+    Image { url: String, alt: String },
+    /// Mermaid fenced code block. Still renders as a placeholder line in
+    /// the v1 fallback.
+    Mermaid { source: String },
+}
+
+impl BodyChunk {
+    /// Logical row height of the chunk in the body layout. For `Text`
+    /// chunks this is the line count; for `Image` and `Mermaid` it's `1`
+    /// (the placeholder line) until PR #3/#4 land real widgets.
+    #[must_use]
+    pub fn height(&self) -> u16 {
+        match self {
+            Self::Text(lines) => u16::try_from(lines.len()).unwrap_or(u16::MAX),
+            Self::Image { .. } | Self::Mermaid { .. } => 1,
+        }
+    }
+}
 
 const HR_WIDTH: usize = 60;
 const PLACEHOLDER_BULLET_L0: &str = "  • ";
@@ -22,11 +63,19 @@ const CODE_FG: Color = Color::LightCyan;
 const LINK_FG: Color = Color::Blue;
 const DIM: Color = Color::DarkGray;
 
-/// Render markdown source to a vector of styled lines suitable for
-/// `ratatui::widgets::Paragraph`. Wrap is applied at render time by the
-/// caller; `scroll` is in logical-line units.
+/// Render markdown source to a flat `Vec<Line<'static>>` suitable for a
+/// single `Paragraph` widget. Image and Mermaid blocks render as inline
+/// text placeholders.
 #[must_use]
 pub fn render(input: &str) -> Vec<Line<'static>> {
+    flatten_chunks(render_chunks(input))
+}
+
+/// Render markdown source to typed body chunks. Used by the PR detail
+/// screen to interleave text paragraphs with widget slots that need
+/// their own `Rect` (images, Mermaid diagrams).
+#[must_use]
+pub fn render_chunks(input: &str) -> Vec<BodyChunk> {
     let mut r = Renderer::default();
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -35,11 +84,45 @@ pub fn render(input: &str) -> Vec<Line<'static>> {
     for event in parser {
         r.handle(event);
     }
-    r.finalize()
+    r.finalize_chunks()
+}
+
+/// Collapse a chunk vector to a flat line vector — `Image` and `Mermaid`
+/// chunks render as `[image: alt]` / `[mermaid diagram (N lines)]`
+/// placeholders followed by a blank line for visual separation, matching
+/// the pre-chunk renderer's output exactly so existing snapshots stay
+/// stable.
+fn flatten_chunks(chunks: Vec<BodyChunk>) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        match chunk {
+            BodyChunk::Text(lines) => out.extend(lines),
+            BodyChunk::Image { alt, .. } => {
+                out.push(Line::from(Span::styled(
+                    format!("[image: {alt}]"),
+                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                )));
+                out.push(Line::raw(""));
+            }
+            BodyChunk::Mermaid { source } => {
+                let n = source.trim_end_matches('\n').lines().count().max(1);
+                out.push(Line::from(Span::styled(
+                    format!("[mermaid diagram ({n} lines)]"),
+                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                )));
+                out.push(Line::raw(""));
+            }
+        }
+    }
+    out
 }
 
 #[derive(Default)]
 struct Renderer {
+    /// Completed chunks. Text chunks accumulate in `out` until an
+    /// Image/Mermaid block flushes them as `BodyChunk::Text`.
+    chunks: Vec<BodyChunk>,
+    /// In-progress text chunk's lines.
     out: Vec<Line<'static>>,
     cur: Vec<Span<'static>>,
     style_stack: Vec<Style>,
@@ -55,8 +138,9 @@ struct Renderer {
     link_url: Option<String>,
     link_spans: Vec<Span<'static>>,
     /// Capture state for an Image tag — pulldown emits text events with the
-    /// alt text inside the Image scope.
+    /// alt text inside the Image scope. Carries the URL too.
     image_alt: Option<String>,
+    image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,9 +152,21 @@ struct ListCtx {
 }
 
 impl Renderer {
-    fn finalize(mut self) -> Vec<Line<'static>> {
+    /// Flush in-progress spans, push the trailing text chunk if any, and
+    /// return the typed chunk list.
+    fn finalize_chunks(mut self) -> Vec<BodyChunk> {
         self.flush_line();
-        self.out
+        self.flush_text_chunk();
+        self.chunks
+    }
+
+    /// Move the in-progress text chunk (if any) into `chunks` so a typed
+    /// chunk (Image/Mermaid) can be appended at the right position.
+    fn flush_text_chunk(&mut self) {
+        if !self.out.is_empty() {
+            let lines = std::mem::take(&mut self.out);
+            self.chunks.push(BodyChunk::Text(lines));
+        }
     }
 
     fn handle(&mut self, ev: Event<'_>) {
@@ -162,8 +258,9 @@ impl Renderer {
                 self.link_spans = std::mem::take(&mut self.cur);
                 // Push a marker style; actual styling applied when we close.
             }
-            Event::Start(Tag::Image { dest_url: _, .. }) => {
+            Event::Start(Tag::Image { dest_url, .. }) => {
                 self.image_alt = Some(String::new());
+                self.image_url = Some(dest_url.into_string());
             }
 
             // ── block-level ends ──────────────────────────────────────
@@ -219,11 +316,10 @@ impl Renderer {
             }
             Event::End(TagEnd::Image) => {
                 let alt = self.image_alt.take().unwrap_or_default();
+                let url = self.image_url.take().unwrap_or_default();
                 self.flush_line();
-                self.out.push(Line::from(Span::styled(
-                    format!("[image: {alt}]"),
-                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-                )));
+                self.flush_text_chunk();
+                self.chunks.push(BodyChunk::Image { url, alt });
             }
 
             // ── inline / text ─────────────────────────────────────────
@@ -289,17 +385,13 @@ impl Renderer {
     fn close_code_block(&mut self) {
         let lang = self.in_code.take().unwrap_or_default();
 
-        // Mermaid placeholder: don't render the code, leave a hint.
+        // Mermaid: emit as a typed chunk so the UI can later swap in a
+        // rendered diagram. The body is preserved verbatim for PR #4's
+        // `mmdc` shell-out.
         if lang.eq_ignore_ascii_case("mermaid") {
-            // pulldown-cmark concatenates code-block contents into a single
-            // Text event; count newlines for the (N lines) hint.
-            let body: String = self.code_lines.drain(..).collect();
-            let n = body.trim_end_matches('\n').lines().count().max(1);
-            self.out.push(Line::from(Span::styled(
-                format!("[mermaid diagram ({n} lines)]"),
-                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-            )));
-            self.out.push(Line::raw(""));
+            let source: String = self.code_lines.drain(..).collect();
+            self.flush_text_chunk();
+            self.chunks.push(BodyChunk::Mermaid { source });
             return;
         }
 
@@ -339,4 +431,82 @@ const fn heading_level(level: HeadingLevel) -> usize {
 
 fn in_list(stack: &[ListCtx]) -> bool {
     stack.last().is_some_and(|c| c.item_started)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod chunk_tests {
+    use super::*;
+
+    #[test]
+    fn render_chunks_pure_text_yields_single_text_chunk() {
+        let chunks = render_chunks("Hello, world!\n\nSecond para.");
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(chunks[0], BodyChunk::Text(_)));
+    }
+
+    #[test]
+    fn render_chunks_image_splits_into_typed_variant() {
+        let chunks = render_chunks("Before.\n\n![alt text](https://example.test/x.png)\n\nAfter.");
+        // Expect: Text("Before."+blank) | Image | Text("After.")
+        assert_eq!(chunks.len(), 3);
+        assert!(matches!(chunks[0], BodyChunk::Text(_)));
+        let BodyChunk::Image { ref url, ref alt } = chunks[1] else {
+            panic!("expected Image chunk, got {:?}", chunks[1]);
+        };
+        assert_eq!(url, "https://example.test/x.png");
+        assert_eq!(alt, "alt text");
+        assert!(matches!(chunks[2], BodyChunk::Text(_)));
+    }
+
+    #[test]
+    fn render_chunks_mermaid_carries_source_verbatim() {
+        let src = "```mermaid\ngraph TD\n  A --> B\n```";
+        let chunks = render_chunks(src);
+        let mermaid = chunks
+            .iter()
+            .find_map(|c| match c {
+                BodyChunk::Mermaid { source } => Some(source.clone()),
+                _ => None,
+            })
+            .expect("expected a Mermaid chunk");
+        assert!(mermaid.contains("graph TD"));
+        assert!(mermaid.contains("A --> B"));
+    }
+
+    #[test]
+    fn render_flat_matches_render_chunks_flattened() {
+        // The legacy flat API must keep producing the same line stream
+        // existing snapshots and call sites depend on.
+        let input =
+            "# Title\n\nA paragraph with ![pic](u) inline.\n\n```mermaid\nA-->B\n```\n\nDone.";
+        let flat = render(input);
+        let from_chunks = flatten_chunks(render_chunks(input));
+        assert_eq!(flat.len(), from_chunks.len());
+    }
+
+    #[test]
+    fn body_chunk_height_text_equals_line_count() {
+        let c = BodyChunk::Text(vec![Line::raw(""), Line::raw("a"), Line::raw("b")]);
+        assert_eq!(c.height(), 3);
+    }
+
+    #[test]
+    fn body_chunk_height_image_and_mermaid_are_one() {
+        assert_eq!(
+            BodyChunk::Image {
+                url: "u".into(),
+                alt: "a".into()
+            }
+            .height(),
+            1
+        );
+        assert_eq!(
+            BodyChunk::Mermaid {
+                source: "graph".into()
+            }
+            .height(),
+            1
+        );
+    }
 }

@@ -112,9 +112,15 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                 };
                 let msg = match fetch_pr_detail(client, &repo, number).await {
                     Ok(detail) => {
-                        let body_lines =
-                            u16::try_from(gh_render::render_markdown(&detail.body).len())
-                                .unwrap_or(u16::MAX);
+                        // Sum chunk heights so body_lines reflects the
+                        // chunked stack layout the UI actually renders
+                        // (each image/mermaid contributes 1 line in v1).
+                        let body_lines: u16 = gh_render::render_markdown_chunks(&detail.body)
+                            .iter()
+                            .map(|c| u32::from(c.height()))
+                            .sum::<u32>()
+                            .try_into()
+                            .unwrap_or(u16::MAX);
                         Msg::PrDetailReady { detail, body_lines }
                     }
                     Err(e) => Msg::PrDetailFailed(e.to_string()),

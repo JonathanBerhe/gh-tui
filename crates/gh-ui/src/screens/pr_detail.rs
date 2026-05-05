@@ -5,6 +5,7 @@ use gh_core::{
     ChecksState, ChecksSummary, Mergeable, PrDetail, PrState, ReviewDecision, ReviewState,
     ReviewSummary,
 };
+use gh_render::BodyChunk;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -30,15 +31,143 @@ pub fn draw(detail: &PrDetail, scroll: u16, total_lines: u16, frame: &mut Frame<
     frame.render_widget(meta_line(detail), chunks[1]);
     frame.render_widget(separator(), chunks[3]);
 
-    // Body sits in a horizontal split: the paragraph fills all but the
+    // Body sits in a horizontal split: the chunk stack fills all but the
     // last column, which carries a vertical scrollbar tracking the
     // current scroll position vs. total content length.
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(chunks[5]);
-    frame.render_widget(body_and_reviews(detail, scroll), body_chunks[0]);
+    let body = build_body_chunks(detail);
+    render_body_stack(&body, scroll, frame, body_chunks[0]);
     render_scrollbar(scroll, total_lines, body_chunks[1], frame);
+}
+
+/// Build the full body chunk sequence: markdown chunks (text, image,
+/// mermaid) followed by the optional reviews block as a trailing text
+/// chunk. The output is what the chunk-stack renderer walks; image and
+/// mermaid still render as placeholder text in v1 (PR #3 / PR #4 swap
+/// them for real widgets).
+fn build_body_chunks(detail: &PrDetail) -> Vec<BodyChunk> {
+    let mut chunks = if detail.body.trim().is_empty() {
+        vec![BodyChunk::Text(vec![Line::from(Span::styled(
+            "(no description)",
+            Style::default().fg(Color::DarkGray),
+        ))])]
+    } else {
+        gh_render::render_markdown_chunks(&detail.body)
+    };
+
+    if !detail.reviews.is_empty() {
+        let mut review_lines: Vec<Line<'static>> = vec![
+            Line::raw(""),
+            Line::from(Span::styled(
+                "─".repeat(60),
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "Reviews",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
+        ];
+        for r in &detail.reviews {
+            review_lines.push(review_header(r));
+            review_lines.push(review_excerpt(r));
+            review_lines.push(Line::raw(""));
+        }
+        chunks.push(BodyChunk::Text(review_lines));
+    }
+
+    chunks
+}
+
+/// Vertical chunk stack with a single shared scroll value.
+///
+/// Walks the chunks accumulating logical heights; finds the first chunk
+/// straddling `scroll`, then allocates rects bottom-up until the viewport
+/// fills. Each chunk is rendered into its own rect — text via `Paragraph`,
+/// image / mermaid as placeholder text in this PR (PR #3 / PR #4 swap them
+/// for actual widgets).
+fn render_body_stack(body: &[BodyChunk], scroll: u16, frame: &mut Frame<'_>, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+
+    // Find the first chunk that contains `scroll` and the offset within it.
+    let scroll_u32 = u32::from(scroll);
+    let mut acc: u32 = 0;
+    let mut first_visible = 0usize;
+    let mut offset_in_first: u16 = 0;
+    for (i, chunk) in body.iter().enumerate() {
+        let h = u32::from(chunk.height());
+        if acc + h > scroll_u32 {
+            first_visible = i;
+            offset_in_first = u16::try_from(scroll_u32 - acc).unwrap_or(u16::MAX);
+            break;
+        }
+        acc += h;
+        first_visible = i + 1;
+    }
+
+    // Walk visible chunks, allocating sub-rects along the y-axis.
+    let mut y: u16 = 0;
+    let mut idx = first_visible;
+    while idx < body.len() && y < area.height {
+        let chunk = &body[idx];
+        let chunk_h = chunk.height();
+        let skip = if idx == first_visible {
+            offset_in_first
+        } else {
+            0
+        };
+        let avail = area.height - y;
+        let visible = chunk_h.saturating_sub(skip).min(avail);
+        if visible == 0 {
+            break;
+        }
+        let rect = Rect {
+            x: area.x,
+            y: area.y + y,
+            width: area.width,
+            height: visible,
+        };
+        match chunk {
+            BodyChunk::Text(lines) => {
+                let p = Paragraph::new(lines.clone())
+                    .wrap(Wrap { trim: false })
+                    .scroll((skip, 0))
+                    .block(Block::default().borders(Borders::NONE));
+                frame.render_widget(p, rect);
+            }
+            BodyChunk::Image { alt, .. } => {
+                // Placeholder until PR #3 plugs in `ratatui-image`.
+                let p = Paragraph::new(Line::from(Span::styled(
+                    format!("[image: {alt}]"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                )))
+                .scroll((skip, 0));
+                frame.render_widget(p, rect);
+            }
+            BodyChunk::Mermaid { source } => {
+                let n = source.lines().count().max(1);
+                let p = Paragraph::new(Line::from(Span::styled(
+                    format!("[mermaid diagram ({n} lines)]"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                )))
+                .scroll((skip, 0));
+                frame.render_widget(p, rect);
+            }
+        }
+        y += visible;
+        idx += 1;
+    }
 }
 
 /// Vertical scrollbar on the right edge. `position` is the current scroll
@@ -167,44 +296,6 @@ fn separator() -> Paragraph<'static> {
         "─".repeat(120),
         Style::default().fg(Color::DarkGray),
     )))
-}
-
-fn body_and_reviews(d: &PrDetail, scroll: u16) -> Paragraph<'static> {
-    let mut lines: Vec<Line<'static>> = if d.body.trim().is_empty() {
-        vec![Line::from(Span::styled(
-            "(no description)",
-            Style::default().fg(Color::DarkGray),
-        ))]
-    } else {
-        gh_render::render_markdown(&d.body)
-    };
-
-    if !d.reviews.is_empty() {
-        // Breathe between markdown body and the reviews block.
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "─".repeat(60),
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Reviews",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::raw(""));
-
-        for r in &d.reviews {
-            lines.push(review_header(r));
-            lines.push(review_excerpt(r));
-            lines.push(Line::raw(""));
-        }
-    }
-
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0))
-        .block(Block::default().borders(Borders::NONE))
 }
 
 fn review_header(r: &ReviewSummary) -> Line<'static> {
