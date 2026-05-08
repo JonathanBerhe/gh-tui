@@ -14,6 +14,7 @@ gh-render = { path = "../gh-render" }
 gh-input = { path = "../gh-input" }
 chrono = { workspace = true }
 ratatui = { workspace = true }
+ratatui-image = { workspace = true }
 crossterm = { workspace = true }
 tracing = { workspace = true }
 

@@ -40,10 +40,14 @@ pub enum Msg {
     /// PR detail GraphQL response landed. `body_lines` is the number of
     /// rendered markdown lines (computed by the worker via `gh_render`) so
     /// the reducer can pre-compute review-section scroll offsets without
-    /// pulling `gh-render` into `gh-core`.
+    /// pulling `gh-render` into `gh-core`. `image_urls` lists every
+    /// `![alt](url)` link the body references — the reducer fans out
+    /// `Cmd::FetchImage` for each so the cache is warm by the time the
+    /// renderer reaches the matching `Image` chunk.
     PrDetailReady {
         detail: PrDetail,
         body_lines: u16,
+        image_urls: Vec<String>,
     },
     /// PR detail GraphQL request failed.
     PrDetailFailed(String),
@@ -66,6 +70,13 @@ pub enum Msg {
     },
     /// Per-file diff fetch failed.
     DiffFailed(String),
+    /// An image fetch finished — the cache now has the decoded protocol
+    /// (or a `Failed` slot). Reducer is a no-op; the message exists
+    /// purely to wake the event loop so the next render picks up the
+    /// new cache state.
+    ImageReady {
+        url: String,
+    },
     /// Flip the diff view between unified and split layouts.
     ToggleDiffViewMode,
     /// Move the selection in the PR list.

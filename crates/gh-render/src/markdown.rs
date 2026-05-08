@@ -42,17 +42,47 @@ pub enum BodyChunk {
     Mermaid { source: String },
 }
 
+/// Visual row height reserved for an inline image. Tuned for typical
+/// avatar/screenshot sizes; future TOML config exposes this as a theme
+/// knob. The image scales to fit this rect; the height has to be large
+/// enough that the picker's pixel→cell ratio still produces a legible
+/// rendering on Kitty/iTerm2/Sixel.
+pub const IMAGE_HEIGHT_ROWS: u16 = 12;
+
+/// Visual row height reserved for a Mermaid diagram. Larger than images
+/// because diagrams typically encode more visual structure.
+pub const MERMAID_HEIGHT_ROWS: u16 = 16;
+
 impl BodyChunk {
     /// Logical row height of the chunk in the body layout. For `Text`
-    /// chunks this is the line count; for `Image` and `Mermaid` it's `1`
-    /// (the placeholder line) until PR #3/#4 land real widgets.
+    /// chunks this is the line count; for `Image` and `Mermaid` it's a
+    /// fixed reservation so the renderer can carve out a rect for the
+    /// stateful widget. Mermaid still falls back to placeholder text
+    /// until PR #4 wires the `mmdc` shell-out.
     #[must_use]
     pub fn height(&self) -> u16 {
         match self {
             Self::Text(lines) => u16::try_from(lines.len()).unwrap_or(u16::MAX),
-            Self::Image { .. } | Self::Mermaid { .. } => 1,
+            Self::Image { .. } => IMAGE_HEIGHT_ROWS,
+            Self::Mermaid { .. } => MERMAID_HEIGHT_ROWS,
         }
     }
+}
+
+/// Walk a parsed markdown body and return every `![alt](url)` URL in
+/// document order, deduplicating consecutive repeats. The render layer
+/// uses this to seed the image cache before the body is on screen.
+#[must_use]
+pub fn image_urls(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for chunk in render_chunks(input) {
+        if let BodyChunk::Image { url, .. } = chunk {
+            if out.last() != Some(&url) {
+                out.push(url);
+            }
+        }
+    }
+    out
 }
 
 const HR_WIDTH: usize = 60;
@@ -492,21 +522,45 @@ mod chunk_tests {
     }
 
     #[test]
-    fn body_chunk_height_image_and_mermaid_are_one() {
+    fn body_chunk_height_image_and_mermaid_reserve_widget_rect() {
         assert_eq!(
             BodyChunk::Image {
                 url: "u".into(),
                 alt: "a".into()
             }
             .height(),
-            1
+            IMAGE_HEIGHT_ROWS,
         );
         assert_eq!(
             BodyChunk::Mermaid {
                 source: "graph".into()
             }
             .height(),
-            1
+            MERMAID_HEIGHT_ROWS,
         );
+    }
+
+    #[test]
+    fn image_urls_extracts_in_document_order() {
+        let md =
+            "intro\n\n![first](https://x.test/a.png)\n\nmid\n\n![second](https://x.test/b.png)";
+        let urls = image_urls(md);
+        assert_eq!(urls, vec!["https://x.test/a.png", "https://x.test/b.png"]);
+    }
+
+    #[test]
+    fn image_urls_dedupes_consecutive_repeats() {
+        let md = "![a](u)\n![a](u)\n![b](v)\n![a](u)";
+        let urls = image_urls(md);
+        // The dedupe is "consecutive only" so the third `u` reappears
+        // after the intervening `v`. That's intentional — listing every
+        // appearance lets the worker re-prime the cache if a previous
+        // fetch failed.
+        assert_eq!(urls, vec!["u", "v", "u"]);
+    }
+
+    #[test]
+    fn image_urls_yields_empty_for_no_images() {
+        assert!(image_urls("# heading\nbody text").is_empty());
     }
 }

@@ -13,8 +13,18 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
+use ratatui_image::StatefulImage;
 
-pub fn draw(detail: &PrDetail, scroll: u16, total_lines: u16, frame: &mut Frame<'_>, area: Rect) {
+use crate::images::{ImageCache, ImageState};
+
+pub fn draw(
+    detail: &PrDetail,
+    scroll: u16,
+    total_lines: u16,
+    images: &ImageCache,
+    frame: &mut Frame<'_>,
+    area: Rect,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -39,7 +49,7 @@ pub fn draw(detail: &PrDetail, scroll: u16, total_lines: u16, frame: &mut Frame<
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(chunks[5]);
     let body = build_body_chunks(detail);
-    render_body_stack(&body, scroll, frame, body_chunks[0]);
+    render_body_stack(&body, scroll, images, frame, body_chunks[0]);
     render_scrollbar(scroll, total_lines, body_chunks[1], frame);
 }
 
@@ -91,7 +101,13 @@ fn build_body_chunks(detail: &PrDetail) -> Vec<BodyChunk> {
 /// fills. Each chunk is rendered into its own rect — text via `Paragraph`,
 /// image / mermaid as placeholder text in this PR (PR #3 / PR #4 swap them
 /// for actual widgets).
-fn render_body_stack(body: &[BodyChunk], scroll: u16, frame: &mut Frame<'_>, area: Rect) {
+fn render_body_stack(
+    body: &[BodyChunk],
+    scroll: u16,
+    images: &ImageCache,
+    frame: &mut Frame<'_>,
+    area: Rect,
+) {
     if area.height == 0 {
         return;
     }
@@ -142,16 +158,8 @@ fn render_body_stack(body: &[BodyChunk], scroll: u16, frame: &mut Frame<'_>, are
                     .block(Block::default().borders(Borders::NONE));
                 frame.render_widget(p, rect);
             }
-            BodyChunk::Image { alt, .. } => {
-                // Placeholder until PR #3 plugs in `ratatui-image`.
-                let p = Paragraph::new(Line::from(Span::styled(
-                    format!("[image: {alt}]"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                )))
-                .scroll((skip, 0));
-                frame.render_widget(p, rect);
+            BodyChunk::Image { url, alt } => {
+                render_image_chunk(images, url, alt, rect, skip, frame);
             }
             BodyChunk::Mermaid { source } => {
                 let n = source.lines().count().max(1);
@@ -168,6 +176,58 @@ fn render_body_stack(body: &[BodyChunk], scroll: u16, frame: &mut Frame<'_>, are
         y += visible;
         idx += 1;
     }
+}
+
+/// One Image chunk: render the decoded `StatefulProtocol` when present,
+/// otherwise fall through to placeholder text. Keeps the matching
+/// `BodyChunk::Image` arm small and pulls the cache-locking logic out
+/// of the chunk walk.
+fn render_image_chunk(
+    images: &ImageCache,
+    url: &str,
+    alt: &str,
+    rect: Rect,
+    skip: u16,
+    frame: &mut Frame<'_>,
+) {
+    // Hold the lock just long enough to either render the widget (which
+    // needs `&mut StatefulProtocol`) or yield the placeholder text. The
+    // closure runs to completion before `with_state` returns, so the
+    // mutex isn't held across any further `frame` calls.
+    enum Outcome {
+        Rendered,
+        Placeholder(String),
+    }
+    let outcome = images
+        .with_state(url, |state| match state {
+            ImageState::Ready(protocol) => {
+                // `protocol` is `&mut Box<StatefulProtocol>`; deref so
+                // `StatefulImage`'s `ResizeEncodeRender` bound matches.
+                frame.render_stateful_widget(
+                    StatefulImage::default(),
+                    rect,
+                    protocol.as_mut(),
+                );
+                Outcome::Rendered
+            }
+            ImageState::Loading => Outcome::Placeholder(format!("[image: {alt} — loading…]")),
+            ImageState::Failed(reason) => {
+                Outcome::Placeholder(format!("[image: {alt} — {reason}]"))
+            }
+        })
+        .unwrap_or_else(|| Outcome::Placeholder(format!("[image: {alt}]")));
+
+    let Outcome::Placeholder(label) = outcome else {
+        return;
+    };
+    let p = Paragraph::new(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )))
+    .scroll((skip, 0));
+    frame.render_widget(p, rect);
 }
 
 /// Vertical scrollbar on the right edge. `position` is the current scroll

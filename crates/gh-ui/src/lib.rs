@@ -2,8 +2,11 @@
 //! from `gh-core` and the layout helpers from `gh-render`. **Never** calls
 //! `gh-api` directly — all side effects flow through `Cmd` dispatch.
 
+pub mod images;
 pub mod screens;
 pub mod widgets;
+
+pub use images::{detect_picker, ImageCache, ImageState};
 
 use gh_core::{Screen, State};
 use ratatui::{
@@ -16,8 +19,11 @@ use ratatui::{
 
 /// Single entry point used by the binary's render loop. Splits the area into
 /// a body region and a one-line status bar; dispatches the body to the
-/// appropriate screen renderer based on `state.screen`.
-pub fn draw(state: &State, frame: &mut Frame<'_>) {
+/// appropriate screen renderer based on `state.screen`. `images` carries
+/// the shared cache so screens that embed images (PR detail, future
+/// commit/file browsers) can render the decoded `StatefulProtocol` in
+/// place of placeholder text.
+pub fn draw(state: &State, images: &ImageCache, frame: &mut Frame<'_>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -47,7 +53,7 @@ pub fn draw(state: &State, frame: &mut Frame<'_>) {
             total_lines,
             ..
         } => {
-            screens::pr_detail::draw(detail, *scroll, *total_lines, frame, chunks[0]);
+            screens::pr_detail::draw(detail, *scroll, *total_lines, images, frame, chunks[0]);
         }
         Screen::LoadingDiff { repo, number } => {
             draw_loading(&format!("{} #{number} diff", repo.slug()), frame, chunks[0]);

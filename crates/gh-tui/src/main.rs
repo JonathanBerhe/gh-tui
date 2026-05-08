@@ -34,6 +34,11 @@ async fn main() -> Result<()> {
     // Install logging first so early-startup events are captured.
     let _tracing_guard = tracing_init::install(&args.log_level, args.log_file.as_deref())?;
 
+    // Probe the terminal's image protocol BEFORE entering the alt-screen
+    // so the synchronous query reaches the host terminal directly. `None`
+    // means we render placeholder text for image chunks.
+    let picker = gh_ui::detect_picker();
+
     // Panic hook must be installed BEFORE raw mode, and must restore the
     // terminal BEFORE the previous hook prints the payload.
     terminal::install_panic_hook();
@@ -41,5 +46,5 @@ async fn main() -> Result<()> {
     let _terminal_guard = terminal::TerminalGuard::enter()?;
     let terminal = terminal::new_terminal()?;
 
-    app::run(terminal, args.repo).await
+    app::run(terminal, args.repo, picker).await
 }
