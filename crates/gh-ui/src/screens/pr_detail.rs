@@ -203,11 +203,7 @@ fn render_image_chunk(
             ImageState::Ready(protocol) => {
                 // `protocol` is `&mut Box<StatefulProtocol>`; deref so
                 // `StatefulImage`'s `ResizeEncodeRender` bound matches.
-                frame.render_stateful_widget(
-                    StatefulImage::default(),
-                    rect,
-                    protocol.as_mut(),
-                );
+                frame.render_stateful_widget(StatefulImage::default(), rect, protocol.as_mut());
                 Outcome::Rendered
             }
             ImageState::Loading => Outcome::Placeholder(format!("[image: {alt} — loading…]")),
