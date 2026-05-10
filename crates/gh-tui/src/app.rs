@@ -10,6 +10,7 @@ use futures::StreamExt;
 use gh_api::{cache_db_path, EtagCache};
 use gh_core::{initial_commands, reduce, Cmd, JumpDirection, Msg, RepoRef, SelectionJump, State};
 use gh_input::{Action, Direction, Motion, Resolution, Resolver};
+use ratatui_image::picker::Picker;
 use tokio::sync::mpsc;
 use tracing::{debug, info_span, warn};
 
@@ -20,14 +21,18 @@ use crate::{
 
 const CHANNEL_CAPACITY: usize = 256;
 
-pub async fn run(mut terminal: Tui, repo_arg: Option<String>) -> Result<()> {
+pub async fn run(
+    mut terminal: Tui,
+    repo_arg: Option<String>,
+    picker: Option<Picker>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Msg>(CHANNEL_CAPACITY);
 
     // Build the ETag cache. Persistent SQLite when the cache dir is
     // writable; falls back to an in-memory cache so the binary still
     // launches if the cache is corrupt or the FS is read-only.
     let cache = Arc::new(open_cache_or_fallback().await);
-    let ctx = AppCtx::new(tx.clone(), cache);
+    let ctx = AppCtx::new(tx.clone(), cache, picker);
 
     // Always kick off auth detection.
     for cmd in initial_commands() {
@@ -51,7 +56,7 @@ pub async fn run(mut terminal: Tui, repo_arg: Option<String>) -> Result<()> {
     tokio::spawn(ctrl_c_task(tx.clone()));
 
     let mut state = State::default();
-    terminal.draw(|f| gh_ui::draw(&state, f))?;
+    terminal.draw(|f| gh_ui::draw(&state, &ctx.images, f))?;
 
     while let Some(msg) = rx.recv().await {
         let span = info_span!("reduce");
@@ -65,7 +70,7 @@ pub async fn run(mut terminal: Tui, repo_arg: Option<String>) -> Result<()> {
             workers::dispatch(cmd, ctx.clone());
         }
 
-        terminal.draw(|f| gh_ui::draw(&state, f))?;
+        terminal.draw(|f| gh_ui::draw(&state, &ctx.images, f))?;
 
         if state.should_quit {
             break;

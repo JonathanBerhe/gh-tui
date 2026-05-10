@@ -14,4 +14,8 @@ pub enum Cmd {
     FetchPrDetail { repo: RepoRef, number: u64 },
     /// Fetch the per-file diff for a single PR (REST `/pulls/{n}/files`).
     FetchPrDiff { repo: RepoRef, number: u64 },
+    /// Fetch and decode a remote image so its `StatefulProtocol` is ready
+    /// when the renderer reaches the matching `Image` chunk. The worker
+    /// dedupes by URL via `ImageCache::try_begin`.
+    FetchImage { url: String },
 }

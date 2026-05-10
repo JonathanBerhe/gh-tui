@@ -10,6 +10,8 @@ use gh_api::{
     resolve_from_cwd, Client, EtagCache,
 };
 use gh_core::{Cmd, Msg};
+use gh_ui::ImageCache;
+use ratatui_image::picker::Picker;
 use tokio::sync::{mpsc::Sender, OnceCell};
 use tracing::{debug, warn};
 
@@ -28,14 +30,23 @@ pub struct AppCtx {
     pub tx: Sender<Msg>,
     pub client: Arc<OnceCell<Client>>,
     pub cache: Arc<EtagCache>,
+    /// Terminal image-protocol picker, populated at startup before the
+    /// alt-screen is entered. `None` means we render placeholder text
+    /// for image chunks (no Kitty/iTerm2/Sixel/halfblock support).
+    pub picker: Arc<Option<Picker>>,
+    /// URL → decoded `StatefulProtocol` cache, shared between the image
+    /// fetch worker and the UI render loop.
+    pub images: ImageCache,
 }
 
 impl AppCtx {
-    pub fn new(tx: Sender<Msg>, cache: Arc<EtagCache>) -> Self {
+    pub fn new(tx: Sender<Msg>, cache: Arc<EtagCache>, picker: Option<Picker>) -> Self {
         Self {
             tx,
             client: Arc::new(OnceCell::new()),
             cache,
+            picker: Arc::new(picker),
+            images: ImageCache::new(),
         }
     }
 }
@@ -112,20 +123,88 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                 };
                 let msg = match fetch_pr_detail(client, &repo, number).await {
                     Ok(detail) => {
+                        let chunks = gh_render::render_markdown_chunks(&detail.body);
                         // Sum chunk heights so body_lines reflects the
-                        // chunked stack layout the UI actually renders
-                        // (each image/mermaid contributes 1 line in v1).
-                        let body_lines: u16 = gh_render::render_markdown_chunks(&detail.body)
+                        // chunked stack layout the UI actually renders.
+                        let body_lines: u16 = chunks
                             .iter()
                             .map(|c| u32::from(c.height()))
                             .sum::<u32>()
                             .try_into()
                             .unwrap_or(u16::MAX);
-                        Msg::PrDetailReady { detail, body_lines }
+                        // Pre-extract image URLs so the reducer can fan
+                        // out FetchImage commands; the cache will be warm
+                        // by the time the body renders.
+                        let image_urls: Vec<String> = chunks
+                            .iter()
+                            .filter_map(|c| match c {
+                                gh_render::BodyChunk::Image { url, .. } => Some(url.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        Msg::PrDetailReady {
+                            detail,
+                            body_lines,
+                            image_urls,
+                        }
                     }
                     Err(e) => Msg::PrDetailFailed(e.to_string()),
                 };
                 let _ = ctx.tx.send(msg).await;
+            });
+        }
+        Cmd::FetchImage { url } => {
+            tokio::spawn(async move {
+                // De-dupe via the cache: the first call wins, subsequent
+                // calls for the same URL bail early.
+                if !ctx.images.try_begin(&url) {
+                    return;
+                }
+                let Some(picker) = ctx.picker.as_ref() else {
+                    // No image protocol in this terminal; cache the
+                    // failure so the renderer falls through to text.
+                    ctx.images.set_failed(&url, "no image protocol".into());
+                    return;
+                };
+                let bytes = match reqwest::get(&url).await {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!(error = %e, %url, "image body read failed");
+                            ctx.images.set_failed(&url, e.to_string());
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        warn!(error = %e, %url, "image fetch failed");
+                        ctx.images.set_failed(&url, e.to_string());
+                        return;
+                    }
+                };
+                // Decoding is CPU-bound; offload to a blocking task so we
+                // don't stall the runtime on a big PNG.
+                let url_for_decode = url.clone();
+                let bytes_for_decode = bytes.to_vec();
+                let decoded =
+                    tokio::task::spawn_blocking(move || image::load_from_memory(&bytes_for_decode))
+                        .await;
+                let dyn_img = match decoded {
+                    Ok(Ok(img)) => img,
+                    Ok(Err(e)) => {
+                        warn!(error = %e, url = %url_for_decode, "image decode failed");
+                        ctx.images.set_failed(&url, e.to_string());
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, url = %url_for_decode, "image decode panicked");
+                        ctx.images.set_failed(&url, e.to_string());
+                        return;
+                    }
+                };
+                let protocol = picker.new_resize_protocol(dyn_img);
+                ctx.images.set_ready(&url, protocol);
+                debug!(%url, "image ready");
+                let _ = ctx.tx.send(Msg::ImageReady { url }).await;
             });
         }
         Cmd::FetchPrDiff { repo, number } => {

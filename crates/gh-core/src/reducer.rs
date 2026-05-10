@@ -154,7 +154,11 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                 _ => {}
             }
         }
-        Msg::PrDetailReady { detail, body_lines } => {
+        Msg::PrDetailReady {
+            detail,
+            body_lines,
+            image_urls,
+        } => {
             // Only consume if we're still waiting for THIS detail. Stale
             // responses (number mismatch or screen changed) drop silently.
             if let Screen::LoadingDetail { repo, number } = &state.screen {
@@ -181,8 +185,19 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                         repo: repo_clone,
                         number: pr_number,
                     });
+                    // Fire image fetches in parallel so the cache is warm
+                    // by the time the renderer reaches each Image chunk.
+                    for url in image_urls {
+                        cmds.push(Cmd::FetchImage { url });
+                    }
                 }
             }
+        }
+        Msg::ImageReady { url: _ } => {
+            // Pure UI signal: state is unchanged, but the image cache
+            // (held in `AppCtx`) now has a decoded protocol the next
+            // render can consume. The mpsc round-trip is what actually
+            // wakes `terminal.draw(...)` in the event loop.
         }
         Msg::PrDetailFailed(reason) => {
             // Only transition if we were actually loading a detail; otherwise
@@ -995,6 +1010,7 @@ mod tests {
             Msg::PrDetailReady {
                 detail: pr_detail(7),
                 body_lines: 0,
+                image_urls: Vec::new(),
             },
         );
         let Screen::PrDetail {
@@ -1146,6 +1162,7 @@ mod tests {
             Msg::PrDetailReady {
                 detail: pr_detail(99),
                 body_lines: 0,
+                image_urls: Vec::new(),
             },
         );
         assert!(matches!(s2.screen, Screen::LoadingDetail { number: 7, .. }));

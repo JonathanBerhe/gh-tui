@@ -24,7 +24,10 @@ clap = { workspace = true }
 crossterm = { workspace = true }
 directories = { workspace = true }
 futures = { workspace = true }
+image = { workspace = true }
 ratatui = { workspace = true }
+ratatui-image = { workspace = true }
+reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
