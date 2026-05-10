@@ -43,11 +43,14 @@ pub enum Msg {
     /// pulling `gh-render` into `gh-core`. `image_urls` lists every
     /// `![alt](url)` link the body references — the reducer fans out
     /// `Cmd::FetchImage` for each so the cache is warm by the time the
-    /// renderer reaches the matching `Image` chunk.
+    /// renderer reaches the matching `Image` chunk. `mermaid_blocks`
+    /// carries `(hash, source)` for every Mermaid diagram in the body —
+    /// the reducer fans out `Cmd::RenderMermaid` for each.
     PrDetailReady {
         detail: PrDetail,
         body_lines: u16,
         image_urls: Vec<String>,
+        mermaid_blocks: Vec<(String, String)>,
     },
     /// PR detail GraphQL request failed.
     PrDetailFailed(String),

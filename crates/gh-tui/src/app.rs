@@ -25,6 +25,7 @@ pub async fn run(
     mut terminal: Tui,
     repo_arg: Option<String>,
     picker: Option<Picker>,
+    mmdc_available: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Msg>(CHANNEL_CAPACITY);
 
@@ -32,7 +33,7 @@ pub async fn run(
     // writable; falls back to an in-memory cache so the binary still
     // launches if the cache is corrupt or the FS is read-only.
     let cache = Arc::new(open_cache_or_fallback().await);
-    let ctx = AppCtx::new(tx.clone(), cache, picker);
+    let ctx = AppCtx::new(tx.clone(), cache, picker, mmdc_available);
 
     // Always kick off auth detection.
     for cmd in initial_commands() {

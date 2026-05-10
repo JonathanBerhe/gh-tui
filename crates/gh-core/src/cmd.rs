@@ -18,4 +18,10 @@ pub enum Cmd {
     /// when the renderer reaches the matching `Image` chunk. The worker
     /// dedupes by URL via `ImageCache::try_begin`.
     FetchImage { url: String },
+    /// Shell out to `mmdc` to render a Mermaid source to PNG, decode it,
+    /// and stash the resulting `StatefulProtocol` in the same cache as
+    /// fetched images (keyed by `mermaid_hash` of the source). When
+    /// `mmdc` isn't on the PATH the worker fails the slot immediately so
+    /// the renderer falls through to the existing placeholder text.
+    RenderMermaid { hash: String, source: String },
 }

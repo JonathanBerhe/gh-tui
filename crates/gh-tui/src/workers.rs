@@ -35,18 +35,29 @@ pub struct AppCtx {
     /// for image chunks (no Kitty/iTerm2/Sixel/halfblock support).
     pub picker: Arc<Option<Picker>>,
     /// URL → decoded `StatefulProtocol` cache, shared between the image
-    /// fetch worker and the UI render loop.
+    /// fetch worker and the UI render loop. Mermaid renders share this
+    /// cache too, keyed by `gh_render::mermaid_hash` of the source.
     pub images: ImageCache,
+    /// `true` when `mmdc` is on the PATH; checked once at startup. The
+    /// `RenderMermaid` worker reads this flag and either shells out or
+    /// short-circuits to a `Failed` cache entry.
+    pub mmdc_available: bool,
 }
 
 impl AppCtx {
-    pub fn new(tx: Sender<Msg>, cache: Arc<EtagCache>, picker: Option<Picker>) -> Self {
+    pub fn new(
+        tx: Sender<Msg>,
+        cache: Arc<EtagCache>,
+        picker: Option<Picker>,
+        mmdc_available: bool,
+    ) -> Self {
         Self {
             tx,
             client: Arc::new(OnceCell::new()),
             cache,
             picker: Arc::new(picker),
             images: ImageCache::new(),
+            mmdc_available,
         }
     }
 }
@@ -132,9 +143,10 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                             .sum::<u32>()
                             .try_into()
                             .unwrap_or(u16::MAX);
-                        // Pre-extract image URLs so the reducer can fan
-                        // out FetchImage commands; the cache will be warm
-                        // by the time the body renders.
+                        // Pre-extract image URLs and mermaid blocks so
+                        // the reducer can fan out fetch / render
+                        // commands; both caches will be warm by the time
+                        // the body renders.
                         let image_urls: Vec<String> = chunks
                             .iter()
                             .filter_map(|c| match c {
@@ -142,10 +154,12 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                                 _ => None,
                             })
                             .collect();
+                        let mermaid_blocks = gh_render::markdown_mermaid_blocks(&detail.body);
                         Msg::PrDetailReady {
                             detail,
                             body_lines,
                             image_urls,
+                            mermaid_blocks,
                         }
                     }
                     Err(e) => Msg::PrDetailFailed(e.to_string()),
@@ -205,6 +219,59 @@ pub fn dispatch(cmd: Cmd, ctx: AppCtx) {
                 ctx.images.set_ready(&url, protocol);
                 debug!(%url, "image ready");
                 let _ = ctx.tx.send(Msg::ImageReady { url }).await;
+            });
+        }
+        Cmd::RenderMermaid { hash, source } => {
+            tokio::spawn(async move {
+                // Dedupe via the shared image cache: same hash → only one
+                // mmdc invocation, even across re-renders.
+                if !ctx.images.try_begin(&hash) {
+                    return;
+                }
+                if !ctx.mmdc_available {
+                    ctx.images.set_failed(&hash, "mmdc not installed".into());
+                    let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
+                    return;
+                }
+                let Some(picker) = ctx.picker.as_ref() else {
+                    ctx.images.set_failed(&hash, "no image protocol".into());
+                    let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
+                    return;
+                };
+                let bytes = match crate::mmdc::render_to_png(&hash, &source).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!(error = %e, %hash, "mermaid render failed");
+                        ctx.images.set_failed(&hash, e);
+                        let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
+                        return;
+                    }
+                };
+                // Decoding is CPU-bound; offload to a blocking task so
+                // we don't stall the runtime on a big PNG.
+                let bytes_for_decode = bytes.clone();
+                let decoded =
+                    tokio::task::spawn_blocking(move || image::load_from_memory(&bytes_for_decode))
+                        .await;
+                let dyn_img = match decoded {
+                    Ok(Ok(img)) => img,
+                    Ok(Err(e)) => {
+                        warn!(error = %e, %hash, "mermaid PNG decode failed");
+                        ctx.images.set_failed(&hash, e.to_string());
+                        let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, %hash, "mermaid PNG decode panicked");
+                        ctx.images.set_failed(&hash, e.to_string());
+                        let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
+                        return;
+                    }
+                };
+                let protocol = picker.new_resize_protocol(dyn_img);
+                ctx.images.set_ready(&hash, protocol);
+                debug!(%hash, "mermaid ready");
+                let _ = ctx.tx.send(Msg::ImageReady { url: hash }).await;
             });
         }
         Cmd::FetchPrDiff { repo, number } => {

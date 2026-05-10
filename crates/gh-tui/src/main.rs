@@ -2,6 +2,7 @@
 //! MVU event loop driver.
 
 mod app;
+mod mmdc;
 mod terminal;
 mod tracing_init;
 mod workers;
@@ -39,6 +40,11 @@ async fn main() -> Result<()> {
     // means we render placeholder text for image chunks.
     let picker = gh_ui::detect_picker();
 
+    // Probe `mmdc` once at startup. False means Mermaid blocks render
+    // as placeholder text; otherwise the render worker shells out per
+    // diagram.
+    let mmdc_available = mmdc::detect_mmdc();
+
     // Panic hook must be installed BEFORE raw mode, and must restore the
     // terminal BEFORE the previous hook prints the payload.
     terminal::install_panic_hook();
@@ -46,5 +52,5 @@ async fn main() -> Result<()> {
     let _terminal_guard = terminal::TerminalGuard::enter()?;
     let terminal = terminal::new_terminal()?;
 
-    app::run(terminal, args.repo, picker).await
+    app::run(terminal, args.repo, picker, mmdc_available).await
 }
