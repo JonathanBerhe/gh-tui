@@ -162,15 +162,7 @@ fn render_body_stack(
                 render_image_chunk(images, url, alt, rect, skip, frame);
             }
             BodyChunk::Mermaid { source } => {
-                let n = source.lines().count().max(1);
-                let p = Paragraph::new(Line::from(Span::styled(
-                    format!("[mermaid diagram ({n} lines)]"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                )))
-                .scroll((skip, 0));
-                frame.render_widget(p, rect);
+                render_mermaid_chunk(images, source, rect, skip, frame);
             }
         }
         y += visible;
@@ -212,6 +204,54 @@ fn render_image_chunk(
             }
         })
         .unwrap_or_else(|| Outcome::Placeholder(format!("[image: {alt}]")));
+
+    let Outcome::Placeholder(label) = outcome else {
+        return;
+    };
+    let p = Paragraph::new(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )))
+    .scroll((skip, 0));
+    frame.render_widget(p, rect);
+}
+
+/// One Mermaid chunk: hash the source the same way the worker does,
+/// then mirror the image-chunk render path against the shared cache.
+/// PNGs from `mmdc` decode into the same `StatefulProtocol` that backs
+/// inline images, so they render through the same `StatefulImage`
+/// widget. Fallback text differs slightly so reviewers can tell *why*
+/// they're seeing the placeholder (mmdc missing vs render failure vs
+/// still rendering).
+fn render_mermaid_chunk(
+    images: &ImageCache,
+    source: &str,
+    rect: Rect,
+    skip: u16,
+    frame: &mut Frame<'_>,
+) {
+    let hash = gh_render::mermaid_hash(source);
+    let n = source.lines().count().max(1);
+    enum Outcome {
+        Rendered,
+        Placeholder(String),
+    }
+    let outcome = images
+        .with_state(&hash, |state| match state {
+            ImageState::Ready(protocol) => {
+                frame.render_stateful_widget(StatefulImage::default(), rect, protocol.as_mut());
+                Outcome::Rendered
+            }
+            ImageState::Loading => {
+                Outcome::Placeholder(format!("[mermaid diagram ({n} lines) — rendering…]"))
+            }
+            ImageState::Failed(reason) => {
+                Outcome::Placeholder(format!("[mermaid diagram ({n} lines) — {reason}]"))
+            }
+        })
+        .unwrap_or_else(|| Outcome::Placeholder(format!("[mermaid diagram ({n} lines)]")));
 
     let Outcome::Placeholder(label) = outcome else {
         return;

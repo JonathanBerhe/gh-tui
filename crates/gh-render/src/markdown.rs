@@ -85,6 +85,38 @@ pub fn image_urls(input: &str) -> Vec<String> {
     out
 }
 
+/// Stable cache key for a Mermaid source. Same hash function used by both
+/// the worker (computing the key when caching the rendered PNG) and the
+/// renderer (looking up the cache slot for a given chunk). 16-char hex of
+/// the default 64-bit hasher — collision-free for the modest number of
+/// diagrams a single PR description ever contains.
+#[must_use]
+pub fn mermaid_hash(source: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Walk a parsed markdown body and return every Mermaid block as
+/// `(hash, source)`. Used by the worker to fan out render commands and
+/// by tests to assert extraction. Blocks with identical sources collapse
+/// to a single entry — `mmdc` only needs to render each once.
+#[must_use]
+pub fn mermaid_blocks(input: &str) -> Vec<(String, String)> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for chunk in render_chunks(input) {
+        if let BodyChunk::Mermaid { source } = chunk {
+            let h = mermaid_hash(&source);
+            if seen.insert(h.clone()) {
+                out.push((h, source));
+            }
+        }
+    }
+    out
+}
+
 const HR_WIDTH: usize = 60;
 const PLACEHOLDER_BULLET_L0: &str = "  • ";
 const PLACEHOLDER_BULLET_L1: &str = "    ◦ ";
@@ -562,5 +594,51 @@ mod chunk_tests {
     #[test]
     fn image_urls_yields_empty_for_no_images() {
         assert!(image_urls("# heading\nbody text").is_empty());
+    }
+
+    #[test]
+    fn mermaid_hash_is_stable_and_distinct() {
+        // Same source → same hash on every call.
+        let h1 = mermaid_hash("graph TD;\n  A-->B");
+        let h2 = mermaid_hash("graph TD;\n  A-->B");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16, "hex u64 → 16 chars");
+        // Different source → different hash.
+        let h3 = mermaid_hash("graph TD;\n  C-->D");
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn mermaid_blocks_extracts_one_per_unique_source() {
+        let md = concat!(
+            "intro\n\n",
+            "```mermaid\ngraph TD;\n  A-->B\n```\n\n",
+            "between\n\n",
+            "```mermaid\nsequenceDiagram\n  X->>Y: hi\n```\n",
+        );
+        let blocks = mermaid_blocks(md);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].1.contains("graph TD"));
+        assert!(blocks[1].1.contains("sequenceDiagram"));
+        assert_ne!(blocks[0].0, blocks[1].0);
+    }
+
+    #[test]
+    fn mermaid_blocks_dedupes_identical_sources() {
+        let md = concat!(
+            "```mermaid\ngraph TD;\n  A-->B\n```\n\n",
+            "intervening text\n\n",
+            "```mermaid\ngraph TD;\n  A-->B\n```\n",
+        );
+        let blocks = mermaid_blocks(md);
+        // Same source twice → one render command — `mmdc` only needs to
+        // run once and the renderer reuses the cache slot for both.
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn mermaid_blocks_yields_empty_for_no_diagrams() {
+        let md = "# heading\nbody text\n```rust\nfn x() {}\n```";
+        assert!(mermaid_blocks(md).is_empty());
     }
 }

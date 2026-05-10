@@ -158,6 +158,7 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
             detail,
             body_lines,
             image_urls,
+            mermaid_blocks,
         } => {
             // Only consume if we're still waiting for THIS detail. Stale
             // responses (number mismatch or screen changed) drop silently.
@@ -189,6 +190,13 @@ pub fn reduce(mut state: State, msg: Msg) -> (State, Vec<Cmd>) {
                     // by the time the renderer reaches each Image chunk.
                     for url in image_urls {
                         cmds.push(Cmd::FetchImage { url });
+                    }
+                    // Fire Mermaid render commands in parallel — the worker
+                    // shells out to `mmdc` and stashes the PNG protocol
+                    // under the source's hash. Renderer looks up by the
+                    // same hash when it reaches the chunk.
+                    for (hash, source) in mermaid_blocks {
+                        cmds.push(Cmd::RenderMermaid { hash, source });
                     }
                 }
             }
@@ -1011,6 +1019,7 @@ mod tests {
                 detail: pr_detail(7),
                 body_lines: 0,
                 image_urls: Vec::new(),
+                mermaid_blocks: Vec::new(),
             },
         );
         let Screen::PrDetail {
@@ -1163,6 +1172,7 @@ mod tests {
                 detail: pr_detail(99),
                 body_lines: 0,
                 image_urls: Vec::new(),
+                mermaid_blocks: Vec::new(),
             },
         );
         assert!(matches!(s2.screen, Screen::LoadingDetail { number: 7, .. }));
