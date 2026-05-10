@@ -69,7 +69,7 @@ directories = "6"
 pretty_assertions = "1.4"
 insta = { version = "1.40", features = ["yaml"] }
 wiremock = "0.6"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
