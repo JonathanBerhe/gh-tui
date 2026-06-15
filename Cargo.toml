@@ -58,7 +58,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 tree-sitter = "0.25"
 tree-sitter-highlight = "0.25"
 tree-sitter-rust = "0.24"
-similar = "2.6"
+similar = "3.1"
 ratatui-image = { version = "11.0.0-alpha.2", default-features = false, features = ["crossterm", "image-defaults"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
