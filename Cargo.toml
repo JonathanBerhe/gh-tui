@@ -48,7 +48,7 @@ octocrab = "0.49"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 
 # Storage
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 
 # Time
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
