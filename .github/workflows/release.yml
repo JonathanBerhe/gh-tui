@@ -33,7 +33,7 @@ jobs:
             artifact: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -84,7 +84,7 @@ jobs:
       - name: Show artifacts
         run: ls -la artifacts/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@v3.0.1
         with:
           files: |
             artifacts/gh-tui_*.tar.gz
